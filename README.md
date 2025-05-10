@@ -33,3 +33,55 @@ Objects can be moved, rotated, duplicated, and queried like real-world things.
 
 ### ✅ Visualization  
 Render your system in 3D with clear colors, class grouping, and coordinate annotations via Plotly.
+
+---
+
+# 🔧 Core Concepts
+
+| Class           | Description                             |
+| --------------- | --------------------------------------- |
+| `Element`       | The atomic building block (e.g., stud)  |
+| `Component`     | Assembly of elements (e.g., wall panel) |
+| `Object`        | Functional unit (e.g., wall, floor)     |
+| `Wall` / `Deck` | Specializations of `Object`             |
+
+
+Each class supports:
+
+* `.copy(), .move(), .rotate_z()`
+
+* Recursive access to child parts
+
+* Material aggregation by volume and percent
+
+---
+
+# 📈 Vision
+This is a foundation for a new kind of architectural platform—one where data is:
+
+* Composable
+
+* Queryable
+
+* Simulation-Ready
+
+* AI-Assistive
+
+The goal isn’t to replace design tools. It’s to structure design data so it can be used intelligently—by humans, systems, and models alike.
+
+---
+
+# 📍 Status
+hierArchical is early-stage but already includes:
+
+* B-rep + mesh geometry system
+
+* Transformable primitives (box, prism, etc.)
+
+* Full element-component-object hierarchy
+
+* Plotly visualization
+
+* Material tracking + reporting
+
+More is coming: zones, spans, structural logic, simulation hooks, and generative tools.
