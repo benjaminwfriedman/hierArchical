@@ -88,30 +88,56 @@ class BaseItem:
         translation = np.eye(4)
         translation[:3, 3] = [dx, dy, dz]
         self.geometry.transform_geometry(translation)
+
+        # Apply the translation to all sub-items
+        for sub_item in self.sub_items:
+            sub_item.move(dx, dy, dz)
         return self
 
     def right(self, dx: float = 1.0) -> "BaseItem":
         self.geometry.right(dx)
+
+        # Apply the rightward movement to all sub-items
+        for sub_item in self.sub_items:
+            sub_item.right(dx)
         return self
 
     def forward(self, dy: float = 1.0) -> "BaseItem":
         self.geometry.forward(dy)
+
+        # Apply the forward movement to all sub-items
+        for sub_item in self.sub_items:
+            sub_item.forward(dy)
         return self
 
     def up(self, dz: float = 1.0) -> "BaseItem":
         self.geometry.up(dz)
+        # Apply the upward movement to all sub-items
+        for sub_item in self.sub_items:
+            sub_item.up(dz)
         return self
 
     def back(self, dy: float = 1.0) -> "BaseItem":
         self.geometry.back(dy)
+        # Apply the backward movement to all sub-items
+        for sub_item in self.sub_items:
+            sub_item.back(dy)
         return self
 
     def left(self, dx: float = 1.0) -> "BaseItem":
         self.geometry.left(dx)
+
+        # Apply the leftward movement to all sub-items
+        for sub_item in self.sub_items:
+            sub_item.left(dx)
         return self
 
     def down(self, dz: float = 1.0) -> "BaseItem":
         self.geometry.down(dz)
+
+        # Apply the downward movement to all sub-items
+        for sub_item in self.sub_items:
+            sub_item.down(dz)
         return self
 
     def rotate_z(self, angle_rad: float) -> "BaseItem":
@@ -119,7 +145,10 @@ class BaseItem:
         Rotate the item around the Z-axis. Returns self.
         """
         self.geometry.rotate_z(angle_rad)
-        return self
+        # Apply the rotation to all sub-items
+        for sub_item in self.sub_items:
+            sub_item.rotate_z(angle_rad)
+        return self 
 
 
     @classmethod
