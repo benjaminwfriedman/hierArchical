@@ -238,7 +238,7 @@ if __name__ == "__main__":
     objects = [wall_long_1, wall_long_2, wall_short_1, wall_short_2,
                deck, deck2, wall_long_3, wall_long_4, wall_short_3]
 
-    plot_items(objects, color_by_class=True, flatten_to_elements=False)
+    plot_items(objects, color_by_class=True, flatten_to_elements=True)
     print_bill_of_materials(objects)
     print_parts_report(objects)
 
