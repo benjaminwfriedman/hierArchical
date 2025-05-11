@@ -5,74 +5,92 @@ from .helpers import random_color, generate_id
 from typing import List, Union
 import plotly.graph_objects as go
 
-def plot_items(items, show_coords=False, color_by_class=False, flatten_to_elements=False):
+def plot_items(items,
+               show_coords=False,
+               color_by_class=False,
+               color_by_attribute=None,
+               flatten_to_elements=False):
     """
-    Plot the B-rep surfaces of multiple BaseItems, optionally flattening to elements.
+    Plot the B-rep surfaces of multiple BaseItems, grouped and colored by attribute or class.
 
     Args:
-        items (List[BaseItem]): List of items (Element, Component, Object).
-        show_coords (bool): Whether to annotate vertex coordinates in the plot.
-        color_by_class (bool): Whether to group items by their class and color them consistently.
-        flatten_to_elements (bool): Whether to recursively extract all elements before plotting.
+        items (List[BaseItem])
+        show_coords (bool)
+        color_by_class (bool)
+        color_by_attribute (str)
+        flatten_to_elements (bool)
     """
     from collections import defaultdict
+    import plotly.graph_objects as go
 
     fig = go.Figure()
 
-    # Optionally flatten to elements
+    # Flatten to elements if needed
     if flatten_to_elements:
-        all_elements = []
-
-        def recurse(item: BaseItem):
+        def flatten(item):
             if isinstance(item, Element):
-                all_elements.append(item)
-            elif hasattr(item, "sub_items") and item.sub_items:
+                return [item]
+            elif hasattr(item, "sub_items"):
+                flattened = []
                 for sub in item.sub_items:
-                    recurse(sub)
+                    flattened.extend(flatten(sub))
+                return flattened
+            return []
 
+        all_elements = []
         for top in items:
-            recurse(top)
-
+            all_elements.extend(flatten(top))
         items = all_elements
 
-    # Assign consistent colors by class or element type
-    class_colors = {}
-    if color_by_class:
-        types = sorted(set(type(item).__name__ if not flatten_to_elements else item.type for item in items))
-        for idx, t in enumerate(types):
-            class_colors[t] = random_color(seed=idx + 3)
+    # Determine grouping key
+    def get_group_key(item):
+        if color_by_class:
+            return type(item).__name__
+        elif color_by_attribute:
+            return getattr(item, color_by_attribute, "unknown")
+        return "default"
 
-    for idx, item in enumerate(items):
-        brep = item.geometry.brep_data
-        surfaces = brep.get("surfaces", [])
+    # Group items by key
+    grouped_items = defaultdict(list)
+    for item in items:
+        grouped_items[get_group_key(item)].append(item)
+
+    # Assign colors
+    keys = sorted(grouped_items.keys())
+    key_colors = {key: random_color(seed=idx + 10) for idx, key in enumerate(keys)}
+
+    # Plot each group
+    for key, group in grouped_items.items():
         vertices = []
         faces = []
+        vert_count = 0
 
-        for surf in surfaces:
-            vs = surf.get("vertices", [])
-            offset = len(vertices)
-            vertices.extend(vs)
+        for item in group:
+            brep = item.geometry.brep_data
+            surfaces = brep.get("surfaces", [])
+            for surf in surfaces:
+                vs = surf.get("vertices", [])
+                offset = len(vertices)
+                vertices.extend(vs)
 
-            if len(vs) >= 3:
-                for i in range(1, len(vs) - 1):
-                    faces.append((offset, offset + i, offset + i + 1))
+                if len(vs) >= 3:
+                    for i in range(1, len(vs) - 1):
+                        faces.append((offset, offset + i, offset + i + 1))
 
         if not vertices or not faces:
             continue
 
         x, y, z = zip(*vertices)
         i, j, k = zip(*faces)
-        label = item.type if flatten_to_elements else type(item).__name__
-        color = class_colors[label] if color_by_class else random_color(seed=idx)
 
         fig.add_trace(go.Mesh3d(
             x=x, y=y, z=z,
             i=i, j=j, k=k,
             opacity=0.5,
-            color=color,
-            name=f"{item.name} ({label})" if color_by_class else item.name,
-            hovertext=item.name,
-            hoverinfo='text'
+            color=key_colors[key],
+            name=str(key),  # legend entry
+            hoverinfo='skip',
+            showlegend=True
         ))
 
         if show_coords:
@@ -81,7 +99,6 @@ def plot_items(items, show_coords=False, color_by_class=False, flatten_to_elemen
                 x=x, y=y, z=z,
                 mode="text",
                 text=labels,
-                textposition="top center",
                 showlegend=False,
                 hoverinfo="none",
                 textfont=dict(size=9, color="black")
