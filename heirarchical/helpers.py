@@ -11,3 +11,11 @@ def random_color(seed=None):
     g = random.randint(0, 250)
     b = random.randint(0, 250)
     return f"rgb({r},{g},{b})"
+
+def normalize_ifc_enum(value: str) -> str:
+    """
+    Normalize IFC-style enum strings (e.g., '.SINGLE_SWING_LEFT.') to lowercase underscore format.
+    """
+    if not value:
+        return ""
+    return value.strip('.').lower()
