@@ -1,9 +1,10 @@
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List, Union
 from .geometry import Geometry
 import numpy as np
-from .helpers import generate_id
+from .helpers import generate_id, normalize_ifc_enum
 from copy import deepcopy
+from pathlib import Path
 
 
 
@@ -38,6 +39,8 @@ class BaseItem:
     ontologies: Dict[str, Any] = field(default_factory=dict)
 
     materials: Dict[str, Dict[str, float]] = field(default_factory=dict)
+
+    color: Optional[Tuple[float, float, float]] = None
 
 
     @staticmethod
@@ -257,6 +260,66 @@ class Object(BaseItem):
             materials=materials,
             **kwargs
         )
+    
+    ##TODO: Add functionality to load IFC files in a way that determines the sub components as well.
+    ## Currently it only loads the geometry of the object itself as one object.
+    @classmethod
+    def from_ifc(cls, ifc_path: Union[str, Path], object_type: str = "IfcDoor") -> "Object":
+        """
+        Load and convert a single IFC entity into an Object instance.
+
+        Args:
+            ifc_path: Path to the IFC file.
+            object_type: IFC entity type to extract, e.g., "IfcDoor".
+
+        Returns:
+            An Object instance.
+        """
+        import ifcopenshell
+        import ifcopenshell.geom
+
+        ifc_file = ifcopenshell.open(str(ifc_path))
+        settings = ifcopenshell.geom.settings()
+        settings.set(settings.USE_WORLD_COORDS, True)
+
+        entity = ifc_file.by_type(object_type)[0]  # Assume only one target object
+        name = entity.Name or object_type
+        geometry = Geometry()
+
+        try:
+            shape = ifcopenshell.geom.create_shape(settings, entity)
+            verts = list(zip(*[iter(shape.geometry.verts)] * 3))
+            faces = list(zip(*[iter(shape.geometry.faces)] * 3))
+            geometry.mesh_data = {
+                "vertices": verts,
+                "faces": faces
+            }
+            geometry._generate_brep_from_mesh()
+        except Exception as e:
+            print(f"[IFC] Geometry extraction failed for {name}: {e}")
+
+        sub_items = []
+        for rel in getattr(entity, "IsDecomposedBy", []):
+            for part in getattr(rel, "RelatedObjects", []):
+                sub_geom = Geometry()
+                sub_items.append(
+                    Element(
+                        id=generate_id("element"),
+                        name=part.Name or "Sub Part",
+                        type=part.is_a(),
+                        geometry=sub_geom,
+                        material="unknown"
+                    )
+                )
+
+        return cls(
+            id=generate_id(object_type),
+            name=name,
+            type=object_type.lower(),
+            geometry=geometry,
+            sub_items=tuple(sub_items),
+            materials={}
+        )
 
 @dataclass(slots=True)
 class Wall(Object):
@@ -272,6 +335,124 @@ class Wall(Object):
             name=name,
             type="wall",
             **kwargs
+        )
+    
+@dataclass(slots=True)
+class Door(Object):
+    swing_direction: Optional[str] = None
+    panel_position: Optional[str] = None
+
+    @classmethod
+    def from_components(
+        cls,
+        components: Tuple[Component, ...],
+        name: str,
+        **kwargs
+    ) -> "Door":
+        return super(Door, cls).from_components(
+            components=components,
+            name=name,
+            type="door",
+            **kwargs
+        )
+    @classmethod
+    def from_ifc(cls, ifc_path: Union[str, Path], object_type: str = "IfcDoor") -> "Door":
+        """
+        Load a single IFC IfcDoor entity into a Door object.
+        """
+        import ifcopenshell
+        import ifcopenshell.geom
+
+        ifc_file = ifcopenshell.open(str(ifc_path))
+        settings = ifcopenshell.geom.settings()
+        settings.set(settings.USE_WORLD_COORDS, True)
+
+        entity = ifc_file.by_type(object_type)[0]  # Assumes one door
+        name = entity.Name or object_type
+        geometry = Geometry()
+
+        # Load mesh geometry
+        try:
+            shape = ifcopenshell.geom.create_shape(settings, entity)
+            verts = list(zip(*[iter(shape.geometry.verts)] * 3))
+            faces = list(zip(*[iter(shape.geometry.faces)] * 3))
+            geometry.mesh_data = {
+                "vertices": verts,
+                "faces": faces
+            }
+            geometry._generate_brep_from_mesh()
+        except Exception as e:
+            print(f"[IFC] Geometry extraction failed for {name}: {e}")
+
+        # Door swing + panel orientation
+        swing_direction = None
+        panel_position = None
+
+        style_rel = next(
+            (rel for rel in ifc_file.by_type("IfcRelDefinesByType") if rel.RelatedObjects[0] == entity),
+            None
+        )
+
+        if style_rel and hasattr(style_rel, "RelatingType"):
+            style = style_rel.RelatingType
+            if style.is_a("IfcDoorStyle"):
+                swing_direction = style.OperationType
+            if hasattr(style, "HasPropertySets"):
+                for prop in style.HasPropertySets:
+                    if prop.is_a("IfcDoorPanelProperties"):
+                        panel_position = prop.PanelPosition
+
+        # Material
+        material_name = None
+        for rel in ifc_file.by_type("IfcRelAssociatesMaterial"):
+            if entity in rel.RelatedObjects:
+                mat = rel.RelatingMaterial
+                if hasattr(mat, "Name"):
+                    material_name = mat.Name
+                elif hasattr(mat, "MaterialLayers"):
+                    material_name = ", ".join(layer.Material.Name for layer in mat.MaterialLayers if layer.Material)
+
+        # Color
+        color_rgb = None
+        try:
+            reps = entity.Representation.Representations
+            for rep in reps:
+                for item in rep.Items:
+                    if hasattr(item, "StyledByItem") and item.StyledByItem:
+                        styled = item.StyledByItem[0]
+                        if styled.Styles:
+                            style = styled.Styles[0]
+                            if hasattr(style, "SurfaceColour"):
+                                c = style.SurfaceColour
+                                color_rgb = (round(c.Red, 3), round(c.Green, 3), round(c.Blue, 3))
+        except:
+            pass
+
+        # Optional: collect decomposed sub-elements
+        sub_items = []
+        for rel in getattr(entity, "IsDecomposedBy", []):
+            for part in getattr(rel, "RelatedObjects", []):
+                sub_geom = Geometry()
+                sub_items.append(
+                    Element(
+                        id=generate_id("element"),
+                        name=part.Name or "Sub Part",
+                        type=part.is_a(),
+                        geometry=sub_geom,
+                        material="unknown"
+                    )
+                )
+
+        return cls(
+            id=generate_id(object_type),
+            name=name,
+            type="door",
+            geometry=geometry,
+            sub_items=tuple(sub_items),
+            materials={material_name: {"volume": geometry.compute_volume(), "percent": 1.0}} if material_name else {},
+            swing_direction=normalize_ifc_enum(swing_direction),
+            panel_position=normalize_ifc_enum(panel_position),
+            color=color_rgb
         )
 
 
