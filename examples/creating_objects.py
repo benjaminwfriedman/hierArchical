@@ -1,8 +1,8 @@
 import ifcopenshell
-from heirarchical.items import Object, Door, Element, Component
-from heirarchical.utils import plot_items
-from heirarchical.geometry import Geometry
-from heirarchical.helpers import random_color, generate_id
+from hierarchical.items import Object, Door, Element, Component
+from hierarchical.utils import plot_items
+from hierarchical.geometry import Geometry
+from hierarchical.helpers import random_color, generate_id
 
 # ---------------------------
 # Load Door from IFC
