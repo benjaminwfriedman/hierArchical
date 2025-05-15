@@ -5,11 +5,14 @@ import numpy as np
 from .helpers import generate_id, normalize_ifc_enum
 from copy import deepcopy
 from pathlib import Path
+from .units import UnitSystem, UnitSystems, UNIT_TO_METER
+from .relationships import EmbeddedIn, Embeds, PassesThrough, HasPassingThrough, Relationship, AdjacentTo
 
 
 
 
-@dataclass(slots=True)
+
+@dataclass(slots=True, repr=False)
 class BaseItem:
     """Shared base class for all entities"""
 
@@ -28,7 +31,8 @@ class BaseItem:
     # An optional collection of sub-item IDs (hierarchical structure)
     sub_items: Tuple[str, ...] = field(default_factory=tuple)
 
-
+    # add relationships to the item
+    relationships: List[Relationship] = field(default_factory=list)
     # A set of relationships the item has — well suited for generating graphs
     # relationships: Tuple[Relationship, ...] = field(default_factory=tuple)
 
@@ -42,6 +46,14 @@ class BaseItem:
 
     color: Optional[Tuple[float, float, float]] = None
 
+    unit_system: UnitSystem = UnitSystem.METER
+
+    def __repr__(self):
+        """Lightweight representation for debugger"""
+        return f"{self.__class__.__name__}(id={self.id}, name='{self.name}', type='{self.type}')"
+    
+    def __str__(self):
+        return self.__repr__()
 
     @staticmethod
     def combine_geometries(geometries: Tuple[Geometry, ...]) -> Geometry:
@@ -178,6 +190,371 @@ class BaseItem:
             materials=deepcopy(self.materials),
             **({"material": self.material} if hasattr(self, "material") else {})
         )
+    
+    def intersects_with(self, other: 'BaseItem', return_overlap_percent: bool = False) -> Union[bool, float]:
+        """
+        Check if this item's geometry intersects with another item's geometry.
+        
+        Args:
+            other: Another BaseItem to check intersection with
+            return_overlap_percent: If True, return the overlap percentage instead of boolean
+            
+        Returns:
+            If return_overlap_percent is False: bool indicating intersection
+            If return_overlap_percent is True: float representing overlap percentage (0.0 to 100.0)
+        """
+        return self.geometry.mesh_intersects(other.geometry, return_overlap_percent=return_overlap_percent)
+    
+    def is_adjacent_to(self, other: 'BaseItem', tolerance: float = 0.1) -> bool:
+        """
+        Check if this item is adjacent (touching or very close) to another item.
+        
+        Args:
+            other: The other BaseItem to check against
+            tolerance: Maximum distance to consider as "adjacent" (in model units)
+        
+        Returns:
+            True if items are adjacent, False otherwise
+        """
+        # First check if they intersect (touching)
+        if self.intersects_with(other):
+            return True
+        
+        # Then check if they're within tolerance distance
+        distance = self.geometry.distance_to(other.geometry)
+        return distance <= tolerance
+    
+    def is_next_to_or_intersecting(self, other: 'BaseItem', tolerance: float = 0.1) -> bool:
+        """
+        Combined check for intersection or adjacency.
+        
+        This is a convenience method that combines intersects_with and is_adjacent_to.
+        """
+        return self.is_adjacent_to(other, tolerance)
+    
+    def find_adjacent_items(self, items: List['BaseItem'], tolerance: float = 0.1) -> List['BaseItem']:
+        """
+        Find all items from a list that are adjacent to this item.
+        
+        Args:
+            items: List of BaseItems to check
+            tolerance: Maximum distance to consider as "adjacent"
+        
+        Returns:
+            List of adjacent items
+        """
+        return [item for item in items if item != self and self.is_adjacent_to(item, tolerance)]
+    
+    def find_intersecting_items(self, items: List['BaseItem'], threshold: float) -> List['BaseItem']:
+        """
+        Find all items from a list that intersect with this item above a threshold.
+        
+        Args:
+            items: List of BaseItems to check
+            threshold: Minimum overlap percentage to consider as intersecting (0.0 to 100.0)
+        
+        Returns:
+            List of intersecting items that meet the threshold
+        """
+        intersecting_items = []
+
+        for item in items:
+            if item == self:
+                continue
+                
+            # Get the overlap percentage using mesh_intersects
+            overlap_percent = self.intersects_with(item, return_overlap_percent=True)
+            
+            # Add to list if it meets the threshold
+            if overlap_percent > threshold:
+                intersecting_items.append(item)
+
+        return intersecting_items
+    
+    def add_embedded_in_relationship(self, other: 'BaseItem'):
+        """
+        Add an 'embedded_in' relationship to another item.
+        
+        Args:
+            other: The other BaseItem to establish the relationship with
+        """
+        if not hasattr(self, "relationships"):
+            self.relationships = []
+        
+        self.relationships.append(
+            EmbeddedIn(
+                id=generate_id("embedded_in"),
+                source=self,
+                target=other,
+                attributes={
+                    "overlap_percent": self.intersects_with(other, return_overlap_percent=True)
+                }
+
+            )
+        )
+
+        # apply the reciprocal relationship to the other item
+        if not hasattr(other, "relationships"):
+            other.relationships = []
+        
+        other.relationships.append(
+            Embeds(
+                id=generate_id("embeds"),
+                source=other,
+                target=self,
+                attributes={
+                    "overlap_percent": self.intersects_with(other, return_overlap_percent=True)
+                }
+            )
+        )
+
+        return 
+    
+    def add_adjacent_to_relationship(self, other: 'BaseItem'):
+        """
+        Add an 'adjacent_to' relationship to another item.
+        
+        Args:
+            other: The other BaseItem to establish the relationship with
+            tolerance: Maximum distance to consider as adjacent (default: 0.1)
+        """
+        if not hasattr(self, "relationships"):
+            self.relationships = []
+
+        # check that the relationship doesn't already exist
+        for rel in self.relationships:
+            if rel.type == "adjacent_to" and rel.target == other.id:
+                return  # relationship already exists
+
+                
+        # Add relationship to self
+        self.relationships.append(
+            AdjacentTo(
+                id=generate_id("adjacent_to"),
+                source=self,
+                target=other,
+                attributes={
+                    "overlap_percent": self.intersects_with(other, return_overlap_percent=True)
+                }
+            )
+        )
+        
+        # Apply the reciprocal relationship to the other item
+        if not hasattr(other, "relationships"):
+            other.relationships = []
+        
+        other.relationships.append(
+            AdjacentTo(
+                id=generate_id("adjacent_to"),
+                source=other,
+                target=self,
+                attributes={
+                    "overlap_percent": other.intersects_with(self, return_overlap_percent=True)
+                }
+            )
+        )
+        
+        return
+
+    
+    
+    def convert_units(self, target_unit: UnitSystem, in_place: bool = True) -> Optional['BaseItem']:
+        """
+        Convert the item's geometry and attributes to a different unit system.
+        
+        Args:
+            target_unit: The target unit system
+            in_place: If True, modify this object. If False, return a new object.
+            
+        Returns:
+            None if in_place=True, new BaseItem if in_place=False
+        """
+        if self.unit_system == target_unit:
+            return None if in_place else self.copy()
+        
+        # Calculate conversion factor
+        factor = self._get_conversion_factor(self.unit_system, target_unit)
+        
+        # Create a copy if not in-place
+        item = self if in_place else self.copy()
+        
+        # Convert geometry
+        item._convert_geometry(factor)
+        
+        # Convert relevant attributes
+        item._convert_attributes(factor)
+        
+        # Convert sub-items recursively
+        if item.sub_items:
+            converted_sub_items = []
+            for sub_item in item.sub_items:
+                converted_sub = sub_item.convert_units(target_unit, in_place=False)
+                converted_sub_items.append(converted_sub)
+            item.sub_items = tuple(converted_sub_items)
+        
+        # Update unit system
+        item.unit_system = target_unit
+        
+        return None if in_place else item
+    
+    def _get_conversion_factor(self, from_unit: UnitSystem, to_unit: UnitSystem) -> float:
+        """Calculate conversion factor between two unit systems."""
+        from_meters = UNIT_TO_METER[from_unit]
+        to_meters = UNIT_TO_METER[to_unit]
+        return from_meters / to_meters
+    
+    def _convert_geometry(self, factor: float):
+        """Convert geometry by scaling factor."""
+        if self.geometry:
+            # Scale the geometry
+            scale_matrix = np.eye(4)
+            scale_matrix[0, 0] = factor
+            scale_matrix[1, 1] = factor
+            scale_matrix[2, 2] = factor
+            self.geometry.transform_geometry(scale_matrix)
+    
+    def _convert_attributes(self, factor: float):
+        """Convert unit-dependent attributes."""
+        # Define which attributes need conversion and their dimension
+        unit_conversions = {
+            # Linear dimensions (multiply by factor)
+            "length": 1,
+            "width": 1,
+            "height": 1,
+            "thickness": 1,
+            "diameter": 1,
+            "radius": 1,
+            "perimeter": 1,
+            
+            # Area dimensions (multiply by factor²)
+            "area": 2,
+            "surface_area": 2,
+            "floor_area": 2,
+            
+            # Volume dimensions (multiply by factor³)
+            "volume": 3,
+            
+            # Other specialized conversions
+            "flow_rate": 3,  # volume/time
+            "linear_density": -1,  # mass/length
+        }
+        
+        for attr_name, dimension in unit_conversions.items():
+            if attr_name in self.attributes:
+                self.attributes[attr_name] *= (factor ** dimension)
+        
+        # Convert material volumes
+        if self.materials:
+            for material, data in self.materials.items():
+                if "volume" in data:
+                    data["volume"] *= (factor ** 3)
+
+    def convert_to_metric(self, target_unit: UnitSystem = UnitSystem.METER, in_place: bool = True) -> Optional['BaseItem']:
+        """
+        Convenience method to convert to a metric unit system.
+        
+        Args:
+            target_unit: Target metric unit (default: meters)
+            in_place: If True, modify this object. If False, return a new object.
+        """
+        if target_unit not in UnitSystems.METRIC:
+            raise ValueError(f"{target_unit} is not a metric unit")
+        return self.convert_units(target_unit, in_place)
+    
+    def convert_to_imperial(self, target_unit: UnitSystem = UnitSystem.FOOT, in_place: bool = True) -> Optional['BaseItem']:
+        """
+        Convenience method to convert to an imperial unit system.
+        
+        Args:
+            target_unit: Target imperial unit (default: feet)
+            in_place: If True, modify this object. If False, return a new object.
+        """
+        if target_unit not in UnitSystems.IMPERIAL:
+            raise ValueError(f"{target_unit} is not an imperial unit")
+        return self.convert_units(target_unit, in_place)
+    
+    def get_dimension_in_units(self, dimension: str, unit: UnitSystem) -> float:
+        """
+        Get a specific dimension converted to specified units without changing the object.
+        
+        Args:
+            dimension: The dimension name (e.g., 'length', 'area', 'volume')
+            unit: The unit system to convert to
+            
+        Returns:
+            The dimension value in the specified units
+        """
+        if dimension not in self.attributes:
+            raise ValueError(f"Dimension '{dimension}' not found in attributes")
+        
+        value = self.attributes[dimension]
+        
+        if self.unit_system == unit:
+            return value
+        
+        # Get conversion factor
+        factor = self._get_conversion_factor(self.unit_system, unit)
+        
+        # Determine dimension type
+        dimension_types = {
+            "length": 1, "width": 1, "height": 1, "thickness": 1,
+            "area": 2, "surface_area": 2,
+            "volume": 3
+        }
+        
+        dim_power = dimension_types.get(dimension, 1)
+        return value * (factor ** dim_power)
+    
+    def ensure_unit_system(self, required_unit: UnitSystem):
+        """
+        Ensure the item is in the required unit system, converting if necessary.
+        
+        Args:
+            required_unit: The required unit system
+        """
+        if self.unit_system != required_unit:
+            self.convert_units(required_unit, in_place=True)
+    
+    def _format_dimension(self, value: float, dimension_type: str = "length") -> str:
+        """Format a dimension value with appropriate units."""
+        unit_str = self.unit_system.value
+        
+        # Format based on unit system and value magnitude
+        if self.unit_system in UnitSystems.METRIC:
+            if abs(value) < 0.01 and self.unit_system == UnitSystem.METER:
+                # Convert to mm for small values
+                value *= 1000
+                unit_str = "mm"
+            elif abs(value) > 1000 and self.unit_system == UnitSystem.METER:
+                # Convert to km for large values
+                value /= 1000
+                unit_str = "km"
+        
+        if dimension_type == "area":
+            unit_str += "²"
+        elif dimension_type == "volume":
+            unit_str += "³"
+        
+        return f"{value:.3f} {unit_str}"
+    
+    def get_dimensions_summary(self) -> Dict[str, str]:
+        """Get a formatted summary of all dimensional attributes."""
+        summary = {
+            "unit_system": self.unit_system.value
+        }
+        
+        dimension_types = {
+            "length": "length", "width": "length", "height": "length",
+            "thickness": "length", "diameter": "length", "radius": "length",
+            "area": "area", "surface_area": "area", "floor_area": "area",
+            "volume": "volume"
+        }
+        
+        for attr, dim_type in dimension_types.items():
+            if attr in self.attributes:
+                summary[attr] = self._format_dimension(self.attributes[attr], dim_type)
+        
+        return summary
 
 
 @dataclass(slots=True)
@@ -455,6 +832,23 @@ class Door(Object):
             color=color_rgb
         )
 
+
+@dataclass(slots=True)
+class Window(Object):
+    @classmethod
+    def from_components(
+        cls,
+        components: Tuple[Component, ...],
+        name: str,
+        **kwargs
+    ) -> "Window":
+        return super(Window, cls).from_components(
+            components=components,
+            name=name,
+            type="window",
+            **kwargs
+        )
+    
 
 @dataclass(slots=True)
 class Deck(Object):

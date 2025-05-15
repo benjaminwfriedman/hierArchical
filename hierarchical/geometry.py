@@ -50,6 +50,11 @@ class Geometry:
     # Transformation matrix for local coordinate system
     transform: Optional[np.ndarray] = None
 
+    def __repr__(self):
+        verts = len(self.mesh_data.get("vertices", [])) if self.mesh_data else 0
+        faces = len(self.mesh_data.get("faces", [])) if self.mesh_data else 0
+        return f"Geometry(vertices={verts}, faces={faces})"
+
     @classmethod
     def from_obj(cls, obj_path: Union[str, Path]) -> None:
         """
@@ -402,21 +407,78 @@ class Geometry:
         self.transform_geometry(rot_matrix)
         return self
 
-    def get_bounding_box(self) -> Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
-        """Return the bounding box (min, max) of this geometry"""
-        if not self.mesh_data or "vertices" not in self.mesh_data or not self.mesh_data["vertices"]:
-            return None
+    def get_bbox(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Get axis-aligned bounding box as (min_point, max_point)."""
+        if self.mesh_data and "vertices" in self.mesh_data:
+            vertices = np.array(self.mesh_data["vertices"])
+            min_point = vertices.min(axis=0)
+            max_point = vertices.max(axis=0)
+            return min_point, max_point
+        return np.zeros(3), np.zeros(3)
+    
+    def bbox_intersects(self, other: "Geometry", return_overlap_percent: bool = False) -> Union[bool, float]:
+        """
+        Check if bounding boxes intersect.
+        
+        Args:
+            other: Another Geometry object to check intersection with
+            return_overlap_percent: If True, return the overlap percentage instead of boolean
             
-        vertices = self.mesh_data["vertices"]
-        min_x = min(v[0] for v in vertices)
-        min_y = min(v[1] for v in vertices)
-        min_z = min(v[2] for v in vertices)
+        Returns:
+            If return_overlap_percent is False: bool indicating intersection
+            If return_overlap_percent is True: float representing overlap percentage (0.0 to 100.0)
+        """
+        min1, max1 = self.get_bbox()
+        min2, max2 = other.get_bbox()
         
-        max_x = max(v[0] for v in vertices)
-        max_y = max(v[1] for v in vertices)
-        max_z = max(v[2] for v in vertices)
+        # Calculate the intersection box
+        intersection_min = np.maximum(min1, min2)
+        intersection_max = np.minimum(max1, max2)
         
-        return ((min_x, min_y, min_z), (max_x, max_y, max_z))
+        # Check if there's an intersection
+        if np.any(intersection_max < intersection_min):
+            return 0.0 if return_overlap_percent else False
+        
+        if not return_overlap_percent:
+            return True
+        
+        # Calculate volumes
+        intersection_dims = intersection_max - intersection_min
+        intersection_volume = np.prod(intersection_dims)
+        
+        # Calculate volumes of original boxes
+        box1_dims = max1 - min1
+        box1_volume = np.prod(box1_dims)
+        
+        box2_dims = max2 - min2
+        box2_volume = np.prod(box2_dims)
+        
+        # Calculate overlap percentage (can use different methods)
+        # Method 1: Percentage of smaller box that overlaps
+        min_volume = min(box1_volume, box2_volume)
+        if min_volume == 0:
+            return 0.0
+        overlap_percent = (intersection_volume / min_volume) * 100.0
+        
+        return overlap_percent
+
+    
+    def distance_to(self, other: 'Geometry') -> float:
+        """Calculate minimum distance between two geometries."""
+        # Simple implementation using bounding box centers
+        # For more accuracy, implement point-to-mesh distance
+        center1 = (self.get_bbox()[0] + self.get_bbox()[1]) / 2
+        center2 = (other.get_bbox()[0] + other.get_bbox()[1]) / 2
+        return np.linalg.norm(center1 - center2)
+    
+    
+    def mesh_intersects(self, other: 'Geometry', return_overlap_percent: bool = False) -> bool:
+        """Check if the actual meshes intersect (more precise than bbox)."""
+        ## TODO: Implement actual mesh intersection logic
+        
+        # This is a placeholder for a more complex mesh intersection algorithm
+        # You would typically use a library like trimesh or CGAL for this
+        return self.bbox_intersects(other, return_overlap_percent)  # Simplified for now
     
     def compute_volume(self) -> float:
         """
