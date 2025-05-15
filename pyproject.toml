@@ -2,7 +2,7 @@
 name = "hierarchical"
 version = "0.1.0"
 description = "A hierarchical, spatially-aware dataset for architecture"
-authors = [{ name = "Benjamin Friedman ", email = "benny.friedman2@gmail.com" }]
+authors = [{ name = "Benjamin Friedman", email = "benny.friedman2@gmail.com" }]
 dependencies = [
     "scipy",
     "numpy",
@@ -12,3 +12,6 @@ dependencies = [
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+exclude = ["content*", "tests*", "docs*", "examples*"]

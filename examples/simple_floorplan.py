@@ -1,6 +1,6 @@
-from heirarchical.utils import generate_id, plot_items, print_bill_of_materials, print_parts_report
-from heirarchical.geometry import Geometry
-from heirarchical.items import Element, Component, Wall, Deck
+from hierarchical.utils import generate_id, plot_items, print_bill_of_materials, print_parts_report
+from hierarchical.geometry import Geometry
+from hierarchical.items import Element, Component, Wall, Deck
 import numpy as np
 
 if __name__ == "__main__":
