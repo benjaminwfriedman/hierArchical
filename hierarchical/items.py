@@ -555,6 +555,15 @@ class BaseItem:
                 summary[attr] = self._format_dimension(self.attributes[attr], dim_type)
         
         return summary
+    
+    def get_centroid(self):
+        """
+        Get the centroid of the geometry.
+        
+        Returns:
+            A dictionary with x, y, z coordinates of the centroid
+        """
+        return self.geometry.get_centroid()
 
 
 @dataclass(slots=True)
