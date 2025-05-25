@@ -406,6 +406,14 @@ class Geometry:
         ])
         self.transform_geometry(rot_matrix)
         return self
+    
+    def get_centroid(self) -> Vector3D:
+        """Get the centroid of the geometry."""
+        if self.mesh_data and "vertices" in self.mesh_data:
+            vertices = np.array(self.mesh_data["vertices"])
+            centroid = vertices.mean(axis=0)
+            return Vector3D(*centroid)
+        return Vector3D()
 
     def get_bbox(self) -> Tuple[np.ndarray, np.ndarray]:
         """Get axis-aligned bounding box as (min_point, max_point)."""
