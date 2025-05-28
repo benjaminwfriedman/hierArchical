@@ -54,6 +54,7 @@ class BaseItem:
     
     def __str__(self):
         return self.__repr__()
+    
 
     @staticmethod
     def combine_geometries(geometries: Tuple[Geometry, ...]) -> Geometry:
@@ -92,6 +93,13 @@ class BaseItem:
 
         combined.sub_geometries = deepcopy(geometries)
         return combined
+    
+    # ----- Geometry Methods -----
+    def get_height(self) -> float:
+        """
+        Get the height of the item geometry.
+        """
+        return self.geometry.get_height()
 
     # ----- Transformation Methods -----
 
@@ -709,6 +717,9 @@ class Object(BaseItem):
 
 @dataclass(slots=True)
 class Wall(Object):
+
+    boundary_id: Optional[str] = None
+
     @classmethod
     def from_components(
         cls,
@@ -722,6 +733,441 @@ class Wall(Object):
             type="wall",
             **kwargs
         )
+    
+    def get_centerplane_geometry(self) -> Optional['Geometry']:
+        """
+        Get a Geometry object that represents the center plane face of the wall.
+        
+        Returns:
+            Geometry object containing the center plane as a mesh, or None if no center plane found.
+        """
+        center_plane = self.get_center_plane()
+        if not center_plane or not center_plane.get('vertices'):
+            return None
+        
+        plane_vertices = center_plane['vertices']
+        
+        if len(plane_vertices) < 3:
+            return None
+        
+        # Create triangulated faces from the planar vertices
+        faces = []
+        
+        if len(plane_vertices) == 3:
+            # Already a triangle
+            faces = [(0, 1, 2)]
+        elif len(plane_vertices) == 4:
+            # Quadrilateral - create two triangles
+            faces = [(0, 1, 2), (0, 2, 3)]
+        else:
+            # For polygons with more than 4 vertices, triangulate from the first vertex
+            # This works for convex polygons
+            for i in range(1, len(plane_vertices) - 1):
+                faces.append((0, i, i + 1))
+        
+        # Create the geometry object
+        # Note: Adjust import paths based on your project structure
+        try:
+            from .geometry import Geometry, Vector3D
+        except ImportError:
+            # Fallback imports
+            from geometry import Geometry, Vector3D
+        
+        geometry = Geometry()
+        geometry.mesh_data = {
+            "vertices": plane_vertices,
+            "faces": faces
+        }
+        
+        # Generate B-rep data from the mesh
+        geometry._generate_brep_from_mesh()
+        
+        # Set the origin to the center point of the plane
+        center_point = center_plane['point']
+        geometry.origin = Vector3D(center_point[0], center_point[1], center_point[2])
+        
+        return geometry
+    
+    def get_center_plane(self) -> Optional[Dict]:
+        """
+        Find the center plane of the wall that runs through the middle of its thickness.
+        Uses PCA to find the true orientation for non-axis aligned walls.
+        
+        Returns:
+            Dictionary containing 'normal', 'point', 'thickness_direction', and 'vertices' that define the center plane.
+        """
+        geometry = self.geometry
+        if not geometry.mesh_data:
+            return None
+        
+        vertices = geometry.mesh_data.get("vertices", [])
+        if not vertices:
+            return None
+        
+        vertices = np.array(vertices)
+        
+        if len(vertices) < 4:
+            return None
+        
+        # Step 1: Use PCA to find the principal directions of the wall
+        # Center the vertices
+        centroid = np.mean(vertices, axis=0)
+        centered_vertices = vertices - centroid
+        
+        # Compute covariance matrix and eigenvalues/eigenvectors
+        cov_matrix = np.cov(centered_vertices.T)
+        eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
+        
+        # Sort by eigenvalue (largest to smallest)
+        sorted_indices = np.argsort(eigenvalues)[::-1]
+        eigenvalues = eigenvalues[sorted_indices]
+        eigenvectors = eigenvectors[:, sorted_indices]
+        
+        # The eigenvector with the smallest eigenvalue is the thickness direction (normal to wall)
+        thickness_direction = eigenvectors[:, 2]  # Smallest eigenvalue
+        wall_length_direction = eigenvectors[:, 0]  # Largest eigenvalue
+        wall_height_direction = eigenvectors[:, 1]  # Middle eigenvalue
+        
+        # Ensure consistent orientation (normal should point in consistent direction)
+        if thickness_direction[2] < 0:  # Prefer normal pointing up if possible
+            thickness_direction = -thickness_direction
+        
+        # Step 2: Find the center plane by projecting vertices onto the thickness direction
+        # and finding the center along that direction
+        projections = np.dot(centered_vertices, thickness_direction)
+        min_proj = np.min(projections)
+        max_proj = np.max(projections)
+        center_proj = (min_proj + max_proj) / 2
+        
+        # Step 3: Find the center point on the plane
+        center_point = centroid + center_proj * thickness_direction
+        
+        # Step 4: Generate vertices that define the center plane
+        # Project all original vertices onto the center plane
+        plane_vertices = []
+        
+        for vertex in vertices:
+            # Vector from center point to vertex
+            to_vertex = vertex - center_point
+            
+            # Remove the component along the thickness direction (project onto plane)
+            projection_onto_normal = np.dot(to_vertex, thickness_direction)
+            vertex_on_plane = vertex - projection_onto_normal * thickness_direction
+            
+            plane_vertices.append(vertex_on_plane)
+        
+        plane_vertices = np.array(plane_vertices)
+        
+        # Step 5: Find the boundary vertices of the center plane
+        # We'll find the convex hull of the projected vertices
+        try:
+            from scipy.spatial import ConvexHull
+            
+            # Project plane vertices to 2D for convex hull calculation
+            # Use the wall length and height directions as the 2D basis
+            coords_2d = np.column_stack([
+                np.dot(plane_vertices - center_point, wall_length_direction),
+                np.dot(plane_vertices - center_point, wall_height_direction)
+            ])
+            
+            # Find convex hull
+            hull = ConvexHull(coords_2d)
+            boundary_vertices = plane_vertices[hull.vertices]
+            
+        except ImportError:
+            # Fallback: use simplified boundary detection
+            # Find extreme points in each direction
+            projections_length = np.dot(plane_vertices - center_point, wall_length_direction)
+            projections_height = np.dot(plane_vertices - center_point, wall_height_direction)
+            
+            # Find indices of extreme points
+            extreme_indices = [
+                np.argmin(projections_length),  # Min length
+                np.argmax(projections_length),  # Max length
+                np.argmin(projections_height),  # Min height
+                np.argmax(projections_height),  # Max height
+            ]
+            
+            # Remove duplicates and get unique boundary vertices
+            extreme_indices = list(set(extreme_indices))
+            boundary_vertices = plane_vertices[extreme_indices]
+        
+        # Step 6: Sort boundary vertices in a consistent order (counterclockwise)
+        if len(boundary_vertices) > 2:
+            # Calculate angles from center point to sort vertices
+            vectors_to_boundary = boundary_vertices - center_point
+            angles = []
+            
+            for vec in vectors_to_boundary:
+                length_component = np.dot(vec, wall_length_direction)
+                height_component = np.dot(vec, wall_height_direction)
+                angle = np.arctan2(height_component, length_component)
+                angles.append(angle)
+            
+            # Sort by angle
+            sorted_indices = np.argsort(angles)
+            boundary_vertices = boundary_vertices[sorted_indices]
+        
+        return {
+            'normal': tuple(thickness_direction),
+            'point': tuple(center_point),
+            'thickness_direction': tuple(thickness_direction),
+            'length_direction': tuple(wall_length_direction),
+            'height_direction': tuple(wall_height_direction),
+            'vertices': [tuple(v) for v in boundary_vertices],
+            'thickness': float(max_proj - min_proj),
+        }
+    
+
+    def get_centerplane_top_edge(self) -> Optional[Dict[str, Tuple[float, float, float]]]:
+        """
+        Find the top edge of the wall's center plane (highest Z coordinates).
+        
+        Returns:
+            Dictionary with 'start_point', 'end_point', and 'edge_type'.
+        """
+        center_plane = self.get_center_plane()
+        if not center_plane or not center_plane.get('vertices'):
+            return None
+        
+        vertices = np.array(center_plane['vertices'])
+        
+        if len(vertices) < 2:
+            return None
+        
+        # Find vertices at or near the maximum Z
+        z_coords = vertices[:, 2]
+        max_z = np.max(z_coords)
+        z_tolerance = 0.1  # 10cm tolerance
+        top_mask = z_coords >= (max_z - z_tolerance)
+        top_vertices = vertices[top_mask]
+        
+        if len(top_vertices) < 2:
+            return None
+        
+        # Use the wall's length direction to determine left/right
+        length_direction = np.array(center_plane['length_direction'])
+        center_point = np.array(center_plane['point'])
+        
+        # Project top vertices along the length direction to find extremes
+        projections = np.dot(top_vertices - center_point, length_direction)
+        leftmost_idx = np.argmin(projections)
+        rightmost_idx = np.argmax(projections)
+        
+        return {
+            'start_point': tuple(top_vertices[leftmost_idx]),
+            'end_point': tuple(top_vertices[rightmost_idx]),
+            'edge_type': 'top'
+        }
+
+    def get_centerplane_bottom_edge(self) -> Optional[Dict[str, Tuple[float, float, float]]]:
+        """
+        Find the bottom edge of the wall's center plane (lowest Z coordinates).
+        
+        Returns:
+            Dictionary with 'start_point', 'end_point', and 'edge_type'.
+        """
+        center_plane = self.get_center_plane()
+        if not center_plane or not center_plane.get('vertices'):
+            return None
+        
+        vertices = np.array(center_plane['vertices'])
+        
+        if len(vertices) < 2:
+            return None
+        
+        # Find vertices at or near the minimum Z
+        z_coords = vertices[:, 2]
+        min_z = np.min(z_coords)
+        z_tolerance = 0.1  # 10cm tolerance
+        bottom_mask = z_coords <= (min_z + z_tolerance)
+        bottom_vertices = vertices[bottom_mask]
+        
+        if len(bottom_vertices) < 2:
+            return None
+        
+        # Use the wall's length direction to determine left/right
+        length_direction = np.array(center_plane['length_direction'])
+        center_point = np.array(center_plane['point'])
+        
+        # Project bottom vertices along the length direction to find extremes
+        projections = np.dot(bottom_vertices - center_point, length_direction)
+        leftmost_idx = np.argmin(projections)
+        rightmost_idx = np.argmax(projections)
+        
+        return {
+            'start_point': tuple(bottom_vertices[leftmost_idx]),
+            'end_point': tuple(bottom_vertices[rightmost_idx]),
+            'edge_type': 'bottom'
+        }
+
+    def get_centerplane_left_edge(self) -> Optional[Dict[str, Tuple[float, float, float]]]:
+        """
+        Find the left edge of the wall's center plane (in the negative length direction).
+        
+        Returns:
+            Dictionary with 'start_point', 'end_point', and 'edge_type'.
+        """
+        center_plane = self.get_center_plane()
+        if not center_plane or not center_plane.get('vertices'):
+            return None
+        
+        vertices = np.array(center_plane['vertices'])
+        
+        if len(vertices) < 2:
+            return None
+        
+        # Use the wall's length direction to find the left edge
+        length_direction = np.array(center_plane['length_direction'])
+        center_point = np.array(center_plane['point'])
+        
+        # Project vertices along the length direction
+        projections = np.dot(vertices - center_point, length_direction)
+        min_proj = np.min(projections)
+        proj_tolerance = 0.1  # 10cm tolerance
+        
+        left_mask = projections <= (min_proj + proj_tolerance)
+        left_vertices = vertices[left_mask]
+        
+        if len(left_vertices) < 2:
+            return None
+        
+        # Find the bottom and top points on the left side (use Z coordinates)
+        z_coords = left_vertices[:, 2]
+        bottom_idx = np.argmin(z_coords)  # Min Z
+        top_idx = np.argmax(z_coords)     # Max Z
+        
+        return {
+            'start_point': tuple(left_vertices[bottom_idx]),
+            'end_point': tuple(left_vertices[top_idx]),
+            'edge_type': 'left'
+        }
+
+    def get_centerplane_right_edge(self) -> Optional[Dict[str, Tuple[float, float, float]]]:
+        """
+        Find the right edge of the wall's center plane (in the positive length direction).
+        
+        Returns:
+            Dictionary with 'start_point', 'end_point', and 'edge_type'.
+        """
+        center_plane = self.get_center_plane()
+        if not center_plane or not center_plane.get('vertices'):
+            return None
+        
+        vertices = np.array(center_plane['vertices'])
+        
+        if len(vertices) < 2:
+            return None
+        
+        # Use the wall's length direction to find the right edge
+        length_direction = np.array(center_plane['length_direction'])
+        center_point = np.array(center_plane['point'])
+        
+        # Project vertices along the length direction
+        projections = np.dot(vertices - center_point, length_direction)
+        max_proj = np.max(projections)
+        proj_tolerance = 0.1  # 10cm tolerance
+        
+        right_mask = projections >= (max_proj - proj_tolerance)
+        right_vertices = vertices[right_mask]
+        
+        if len(right_vertices) < 2:
+            return None
+        
+        # Find the bottom and top points on the right side (use Z coordinates)
+        z_coords = right_vertices[:, 2]
+        bottom_idx = np.argmin(z_coords)  # Min Z
+        top_idx = np.argmax(z_coords)     # Max Z
+        
+        return {
+            'start_point': tuple(right_vertices[bottom_idx]),
+            'end_point': tuple(right_vertices[top_idx]),
+            'edge_type': 'right'
+        }
+
+    def get_centerplane_all_edges(self) -> Dict[str, Optional[Dict[str, Tuple[float, float, float]]]]:
+        """
+        Get all four edges of the wall's center plane.
+        
+        Returns:
+            Dictionary containing all four edges: 'top', 'bottom', 'left', 'right'
+        """
+        return {
+            'top': self.get_centerplane_top_edge(),
+            'bottom': self.get_centerplane_bottom_edge(),
+            'left': self.get_centerplane_left_edge(),
+            'right': self.get_centerplane_right_edge()
+        }
+
+    def get_centerplane_start_point_bottom(self) -> Tuple[float, float, float]:
+        """
+        Get the start point of the wall at the bottom along the bottom edge.
+        This finds the center line of the wall and uses the leftmost point as the start point.
+        """
+        bottom_edge = self.get_centerplane_bottom_edge()
+        if bottom_edge:
+            return bottom_edge['start_point']
+        
+        # Fallback to center plane vertices
+        center_vertices = self.get_center_plane_vertices()
+        if center_vertices:
+            vertices = np.array(center_vertices)
+            z_coords = vertices[:, 2]
+            min_z = np.min(z_coords)
+            z_tolerance = 0.1
+            
+            bottom_mask = z_coords <= (min_z + z_tolerance)
+            bottom_vertices = vertices[bottom_mask]
+            
+            if len(bottom_vertices) > 0:
+                # Find leftmost point (minimum X+Y)
+                leftmost_idx = np.argmin(bottom_vertices[:, 0] + bottom_vertices[:, 1])
+                return tuple(bottom_vertices[leftmost_idx])
+        
+        return (0.0, 0.0, 0.0)
+
+    def get_centerplane_end_point_bottom(self) -> Tuple[float, float, float]:
+        """
+        Get the end point of the wall at the bottom along the bottom edge.
+        This finds the center line of the wall and uses the rightmost point as the end point.
+        """
+        bottom_edge = self.get_centerplane_bottom_edge()
+        if bottom_edge:
+            return bottom_edge['end_point']
+        
+        # Fallback to center plane vertices
+        center_vertices = self.get_center_plane_vertices()
+        if center_vertices:
+            vertices = np.array(center_vertices)
+            z_coords = vertices[:, 2]
+            min_z = np.min(z_coords)
+            z_tolerance = 0.1
+            
+            bottom_mask = z_coords <= (min_z + z_tolerance)
+            bottom_vertices = vertices[bottom_mask]
+            
+            if len(bottom_vertices) > 0:
+                # Find rightmost point (maximum X+Y)
+                rightmost_idx = np.argmax(bottom_vertices[:, 0] + bottom_vertices[:, 1])
+                return tuple(bottom_vertices[rightmost_idx])
+        
+        return (0.0, 0.0, 0.0)
+
+    def get_centerplane_normal_vector(self) -> Tuple[float, float, float]:
+        """
+        Get the normal vector of the wall's center plane.
+        
+        Returns:
+            A tuple representing the normal vector (x, y, z).
+        """
+        center_plane = self.get_center_plane()
+        if center_plane and 'normal' in center_plane:
+            return tuple(center_plane['normal'])
+        
+        return None
+    
+    
+                
     
 @dataclass(slots=True)
 class Door(Object):
