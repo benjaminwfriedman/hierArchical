@@ -93,6 +93,13 @@ if __name__ == "__main__":
     deck = Deck.from_components((subfloor_component,), name="Floor Deck")
     deck2 = deck.copy().right(deck_width)
 
+    # --- top deck --- components
+
+    deck_roof = deck.copy().up(plywood_height)
+    deck_roof.name = "Roof Deck"
+    deck2_roof = deck2.copy().up(plywood_height)
+    deck2_roof.name = "Roof Deck 2"
+
     # --- Extra Walls (duplicated for second deck) ---
     wall_long_3 = wall_long_2.copy().right(plywood_width_long)
     wall_long_4 = wall_long_1.copy().right(plywood_width_long)
@@ -198,10 +205,21 @@ if __name__ == "__main__":
 
     # --- Plot and Report ---
     objects = [wall_long_1, wall_long_2, wall_short_1, wall_short_2,
-               deck, deck2, wall_long_3, wall_long_4, wall_short_3, created_door]
+               deck, deck2, wall_long_3, wall_long_4, wall_short_3, created_door, deck_roof, deck2_roof]
     
 
     model = Model.from_objects(objects)
     model.create_adjacency_relationships(tolerance=0.001)
+    model.infer_bounds()
+    model.infer_spaces()
+    model.show_spaces()
+    model.show_objects()
+
+  
+    print('Model has {} spaces'.format(len(model.spaces)))
+
+
+
     # model.show_building_graph(view="3d")
-    model.show(color_by_class=True, show_building_graph=True)
+    # model.show(color_by_class=True, show_building_graph=True)
+

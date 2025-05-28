@@ -4,6 +4,8 @@ from .items import BaseItem, Element
 from .helpers import random_color, generate_id
 from typing import List, Union
 import plotly.graph_objects as go
+import matplotlib.pyplot as plt
+from shapely.plotting import plot_line
 
 def plot_items(items,
                show_coords=False,
@@ -187,3 +189,31 @@ def print_parts_report(objects: List[BaseItem]) -> None:
     for item, count in sorted(summary.items()):
         print(f"{count} X {item}")
 
+def plot_shapely_lines(lines, color='black'):
+    """
+    Plot a list of shapely LineString objects using shapely's built-in plotting.
+    
+    Args:
+        lines (list): List of shapely.geometry.LineString objects.
+        color (str): Line color (default: black).
+    """
+    fig, ax = plt.subplots()
+
+    for line in lines:
+        plot_line(line, ax=ax, color=color)
+
+    ax.set_aspect('equal', 'box')
+    plt.xlabel("X")
+    plt.ylabel("Y")
+    plt.title("LineStrings")
+    plt.grid(True)
+    plt.show()
+
+
+def plot_topologic_objects(objects: List):
+    from topologicpy.Topology import Topology
+
+    Topology.Show(
+        objects,
+        renderer="browser"
+    )
