@@ -2,6 +2,13 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 from pathlib import Path
+import math
+from topologicpy.Topology import Topology
+from topologicpy.Cell import Cell
+from topologicpy.Vertex import Vertex
+from topologicpy.Edge import Edge
+from topologicpy.Face import Face
+
 
 
 @dataclass(slots=True)
@@ -87,6 +94,99 @@ class Geometry:
         geom._generate_brep_from_mesh()
 
         return geom
+    
+    @classmethod
+    def from_topology(cls, topology:Topology):
+        """
+        Create mesh and brep_data from a Topology object
+        
+        Args:
+            topology: A Topology object containing faces and vertices
+        """
+        import numpy as np
+        from topologicpy.Vertex import Vertex
+        
+        tolerance = 1e-6
+
+        def triangulate_face_indices(face_indices, triangulation_method="fan"):
+            """
+            Triangulate a face given its vertex indices.
+            
+            Args:
+                face_indices: List of vertex indices forming the face
+                triangulation_method: "fan" (simple) or "center" (better for convex faces)
+            
+            Returns:
+                List of triangles (each triangle is a list of 3 vertex indices)
+            """
+            if len(face_indices) < 3:
+                return []
+            elif len(face_indices) == 3:
+                return [face_indices]
+            
+            triangles = []
+            
+            if triangulation_method == "fan":
+                # Fan triangulation - connects all vertices to first vertex
+                for i in range(1, len(face_indices) - 1):
+                    triangle = [face_indices[0], face_indices[i], face_indices[i + 1]]
+                    triangles.append(triangle)
+            
+            elif triangulation_method == "center":
+                # This would require calculating centroid - simplified version
+                # For now, fall back to fan triangulation
+                for i in range(1, len(face_indices) - 1):
+                    triangle = [face_indices[0], face_indices[i], face_indices[i + 1]]
+                    triangles.append(triangle)
+            
+            return triangles
+
+        geom = Geometry()
+        
+        # Extract faces from the topology
+        topologic_faces = Topology.Faces(topology)
+        
+        vertices = []
+        faces = []
+        
+        # Process each face
+        for face in topologic_faces:
+            face_vertices = Topology.Vertices(face)
+            face_indices = []
+            
+            for vertex in face_vertices:
+                # Extract coordinates from vertex instance
+                x = Vertex.X(vertex)
+                y = Vertex.Y(vertex)
+                z = Vertex.Z(vertex)
+                vertex_coords = np.array([x, y, z])
+                
+                # Find if vertex already exists within tolerance
+                vertex_index = None
+                for i, existing_vertex in enumerate(vertices):
+                    if np.linalg.norm(vertex_coords - np.array(existing_vertex)) < tolerance:
+                        vertex_index = i
+                        break
+                
+                # Add new vertex if not found
+                if vertex_index is None:
+                    vertex_index = len(vertices)
+                    vertices.append((x, y, z))
+                
+                face_indices.append(vertex_index)
+            
+            # Triangulate faces automatically
+            if len(face_indices) >= 3:
+                triangles = triangulate_face_indices(face_indices)
+                faces.extend(triangles)
+        
+        geom.mesh_data = {
+            "vertices": vertices,
+            "faces": faces
+        }
+        
+        return geom
+
 
     @classmethod
     def from_stl(cls, stl_path: Union[str, Path]) -> None:
@@ -414,6 +514,26 @@ class Geometry:
             centroid = vertices.mean(axis=0)
             return Vector3D(*centroid)
         return Vector3D()
+    
+    def get_vertices(self) -> List[Tuple[float, float, float]]:
+        """Get the vertices of the geometry."""
+        if self.mesh_data and "vertices" in self.mesh_data:
+            return [tuple(v) for v in self.mesh_data["vertices"]]
+        return []
+    def get_faces(self) -> List[Tuple[int, ...]]:
+        """Get the faces of the geometry."""
+        if self.mesh_data and "faces" in self.mesh_data:
+            return [tuple(f) for f in self.mesh_data["faces"]]
+        return []
+    
+    def get_height(self) -> float:
+        """Get the height of the geometry."""
+        if self.mesh_data and "vertices" in self.mesh_data:
+            vertices = np.array(self.mesh_data["vertices"])
+            min_z = vertices[:, 2].min()
+            max_z = vertices[:, 2].max()
+            return max_z - min_z
+        return 0.0
 
     def get_bbox(self) -> Tuple[np.ndarray, np.ndarray]:
         """Get axis-aligned bounding box as (min_point, max_point)."""
@@ -480,13 +600,77 @@ class Geometry:
         return np.linalg.norm(center1 - center2)
     
     
-    def mesh_intersects(self, other: 'Geometry', return_overlap_percent: bool = False) -> bool:
-        """Check if the actual meshes intersect (more precise than bbox)."""
-        ## TODO: Implement actual mesh intersection logic
+    def mesh_intersects(self, other: 'Geometry', return_overlap_percent: bool = False) -> Union[bool, float]:
+        """Check if the actual meshes intersect using trimesh."""
+        try:
+            import trimesh
+        except ImportError:
+            print("trimesh not installed, falling back to bbox intersection")
+            return self.bbox_intersects(other, return_overlap_percent)
         
-        # This is a placeholder for a more complex mesh intersection algorithm
-        # You would typically use a library like trimesh or CGAL for this
-        return self.bbox_intersects(other, return_overlap_percent)  # Simplified for now
+        # Convert both geometries to trimesh objects
+        mesh1 = self._to_trimesh()
+        mesh2 = other._to_trimesh()
+        
+        if mesh1 is None or mesh2 is None:
+            return 0.0 if return_overlap_percent else False
+        
+        try:
+            # Check if meshes intersect
+            intersects = mesh1.intersects_mesh(mesh2)
+            
+            if not return_overlap_percent:
+                return intersects
+            
+            if not intersects:
+                return 0.0
+            
+            # Calculate overlap percentage if requested
+            intersection = mesh1.intersection(mesh2)
+            
+            if intersection is None or not hasattr(intersection, 'volume'):
+                return 0.0
+            
+            # Calculate overlap as percentage of smaller mesh
+            vol1 = mesh1.volume if mesh1.is_watertight else 0
+            vol2 = mesh2.volume if mesh2.is_watertight else 0
+            intersection_vol = intersection.volume if intersection.is_watertight else 0
+            
+            if vol1 <= 0 or vol2 <= 0:
+                return 0.0
+            
+            # Return percentage of smaller volume that overlaps
+            min_volume = min(vol1, vol2)
+            overlap_percent = (intersection_vol / min_volume) * 100.0
+            
+            return min(overlap_percent, 100.0)  # Cap at 100%
+            
+        except Exception as e:
+            print(f"Error in mesh intersection: {e}")
+            return self.bbox_intersects(other, return_overlap_percent)
+
+    def _to_trimesh(self) -> Optional['trimesh.Trimesh']:
+        """Convert this geometry to a trimesh object."""
+        try:
+            import trimesh
+        except ImportError:
+            return None
+        
+        if not self.mesh_data or "vertices" not in self.mesh_data or "faces" not in self.mesh_data:
+            return None
+        
+        vertices = self.mesh_data["vertices"]
+        faces = self.mesh_data["faces"]
+        
+        if not vertices or not faces:
+            return None
+        
+        try:
+            mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+            return mesh
+        except Exception as e:
+            print(f"Error creating trimesh: {e}")
+            return None
     
     def compute_volume(self) -> float:
         """
@@ -513,3 +697,30 @@ class Geometry:
                 
         return abs(volume)  # Take absolute value as orientation might be reversed
 
+
+
+    def order_vertices_by_angle(vertices):
+        """Order vertices by angle from centroid - works for convex and most star-shaped polygons."""
+    
+        # Convert to numpy array and extract x,y coordinates (ignore z)
+        points = np.array([(float(v[0]), float(v[1])) for v in vertices])
+        
+        # Calculate centroid
+        centroid = np.mean(points, axis=0)
+        
+        # Calculate angle from centroid to each point
+        def angle_from_centroid(point):
+            return math.atan2(point[1] - centroid[1], point[0] - centroid[0])
+        
+        # Sort points by angle
+        points_with_angles = [(point, angle_from_centroid(point)) for point in points]
+        points_with_angles.sort(key=lambda x: x[1])
+        
+        # Extract ordered points and convert back to original format
+        ordered_points = [point for point, angle in points_with_angles]
+        
+        # Convert back to 3D with original z-coordinate
+        z_coord = vertices[0][2]  # Use z from first vertex
+        ordered_vertices = [(x, y, z_coord) for x, y in ordered_points]
+        
+        return ordered_vertices
