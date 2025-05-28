@@ -4,3 +4,5 @@ plotly
 ifcopenshell
 networkx
 matplotlib
+trimesh
+topologicpy
