@@ -674,30 +674,26 @@ class Geometry:
     
     def compute_volume(self) -> float:
         """
-        Compute the volume of the geometry
-        Note: This is an approximation for closed meshes
+        Compute the volume of a closed triangular mesh using the centroid-shifted divergence theorem.
         """
         if not self.mesh_data or "vertices" not in self.mesh_data or "faces" not in self.mesh_data:
             return 0.0
-            
-        vertices = self.mesh_data["vertices"]
+
+        vertices = np.array(self.mesh_data["vertices"])
         faces = self.mesh_data["faces"]
-        
-        # Compute volume using the divergence theorem
-        # For each triangular face
+
+        # Compute centroid of the mesh
+        centroid = np.mean(vertices, axis=0)
+
         volume = 0.0
         for face in faces:
-            if len(face) >= 3:  # Make sure it's at least a triangle
-                v1 = np.array(vertices[face[0]])
-                v2 = np.array(vertices[face[1]])
-                v3 = np.array(vertices[face[2]])
-                
-                # Compute the signed volume of the tetrahedron
+            if len(face) >= 3:
+                v1 = vertices[face[0]] - centroid
+                v2 = vertices[face[1]] - centroid
+                v3 = vertices[face[2]] - centroid
                 volume += np.dot(v1, np.cross(v2, v3)) / 6.0
-                
-        return abs(volume)  # Take absolute value as orientation might be reversed
 
-
+        return abs(volume)
 
     def order_vertices_by_angle(vertices):
         """Order vertices by angle from centroid - works for convex and most star-shaped polygons."""
@@ -724,3 +720,22 @@ class Geometry:
         ordered_vertices = [(x, y, z_coord) for x, y in ordered_points]
         
         return ordered_vertices
+    
+
+
+def process_face_combo(combo):
+    # Local import of Face and Cell if needed, or pass them as globals depending on your env
+    try:
+        normals = [Face.Normal(face) for face in combo]
+        normals = np.array(normals)
+        net = np.sum(normals, axis=0)
+        magnitude = np.linalg.norm(net)
+
+        if magnitude > 1:
+            return (combo, magnitude, None)  # skip
+        else:
+            cell = Cell.ByFaces(list(combo), tolerance=0.01)
+            return (combo, magnitude, cell)
+
+    except Exception as e:
+        return (combo, float("inf"), None)  # error path
