@@ -189,23 +189,40 @@ def print_parts_report(objects: List[BaseItem]) -> None:
     for item, count in sorted(summary.items()):
         print(f"{count} X {item}")
 
-def plot_shapely_lines(lines, color='black'):
+import matplotlib.pyplot as plt
+from shapely.geometry import LineString, Polygon, Point, MultiLineString, MultiPolygon
+from shapely.plotting import plot_line, plot_polygon, plot_points
+
+def plot_shapely_geometries(geometries, color='black'):
     """
-    Plot a list of shapely LineString objects using shapely's built-in plotting.
-    
+    Plot a list of shapely geometry objects using shapely's built-in plotting tools.
+
     Args:
-        lines (list): List of shapely.geometry.LineString objects.
-        color (str): Line color (default: black).
+        geometries (list): List of shapely geometry objects (LineString, Polygon, etc).
+        color (str): Color for drawing the geometries.
     """
     fig, ax = plt.subplots()
 
-    for line in lines:
-        plot_line(line, ax=ax, color=color)
+    for geom in geometries:
+        if isinstance(geom, LineString):
+            plot_line(geom, ax=ax, color=color)
+        elif isinstance(geom, MultiLineString):
+            for line in geom.geoms:
+                plot_line(line, ax=ax, color=color)
+        elif isinstance(geom, Polygon):
+            plot_polygon(geom, ax=ax, add_points=False, facecolor='none', edgecolor=color)
+        elif isinstance(geom, MultiPolygon):
+            for poly in geom.geoms:
+                plot_polygon(poly, ax=ax, add_points=False, facecolor='none', edgecolor=color)
+        elif isinstance(geom, Point):
+            plot_points(geom, ax=ax, color=color)
+        else:
+            print(f"Unsupported geometry type: {type(geom)}")
 
     ax.set_aspect('equal', 'box')
     plt.xlabel("X")
     plt.ylabel("Y")
-    plt.title("LineStrings")
+    plt.title("Shapely Geometries")
     plt.grid(True)
     plt.show()
 
@@ -217,3 +234,5 @@ def plot_topologic_objects(objects: List):
         objects,
         renderer="browser"
     )
+
+
