@@ -7,7 +7,7 @@ import numpy as np
 from typing import List, Tuple, Dict, Optional
 from dataclasses import dataclass, field
 from copy import deepcopy
-from hierarchical.utils import generate_id, plot_shapely_lines, plot_topologic_objects, plot_items
+from hierarchical.utils import generate_id, plot_shapely_geometries, plot_topologic_objects, plot_items
 import matplotlib.pyplot as plt
 from topologicpy.Edge import Edge
 from topologicpy.Face import Face
@@ -25,6 +25,44 @@ from topologicpy.Cell import Cell
 
 # Idea 2: We create spaces out of our walls and floors -> We make boundaries out of spaces?
 
+import numpy as np
+from scipy.spatial import Delaunay
+
+def triangulate_polygon_3d(vertices_3d, normal=None):
+    """
+    Triangulate a planar polygon defined by 3D vertices.
+
+    Args:
+        vertices_3d (list of tuple): List of 3D points (x, y, z).
+        normal (np.array): Optional normal vector of the polygon plane. If not given, it's computed.
+
+    Returns:
+        list of tuple: Face indices (i, j, k) as triangles into the input vertex list.
+    """
+    vertices_3d = np.array(vertices_3d)
+
+    # Compute normal if not provided
+    if normal is None:
+        v1 = vertices_3d[1] - vertices_3d[0]
+        v2 = vertices_3d[2] - vertices_3d[0]
+        normal = np.cross(v1, v2)
+        normal = normal / np.linalg.norm(normal)
+
+    # Create 2D projection basis (u, v)
+    u = vertices_3d[1] - vertices_3d[0]
+    u = u / np.linalg.norm(u)
+    v = np.cross(normal, u)
+
+    def project_to_2d(p):
+        rel = p - vertices_3d[0]
+        return [np.dot(rel, u), np.dot(rel, v)]
+
+    points_2d = np.array([project_to_2d(p) for p in vertices_3d])
+
+    # Triangulate in 2D
+    delaunay = Delaunay(points_2d)
+    return [tuple(triangle) for triangle in delaunay.simplices]
+
 @dataclass
 class Boundary:
     """Represents a space boundary with its properties and geometry."""
@@ -34,11 +72,10 @@ class Boundary:
     is_access_boundary: bool
     is_visual_boundary: bool
     base_item: 'BaseItem'  # Wall elements that form this boundary
-    start_point_bottom: Tuple[float, float, float] # left most vertex of the bottom edge, if equal in the x direction then the top most vertex in the y
-    end_point_bottom: Tuple[float, float, float] # right most vertex of the bottom edge, if equal in the x direction then the bottom most vertex in the y
     height: float
     normal_vector: Tuple[float, float, float]
     adjacent_spaces: List[str]  # IDs of spaces this boundary separates
+    relationships: List[Relationship] = field(default_factory=list)
     
     def __post_init__(self):
         # Calculate boundary properties based on type
@@ -311,6 +348,27 @@ class Boundary:
                           max(z_coords) - min(z_coords))
         }
     
+    def get_start_point_bottom(self) -> Tuple[float, float, float]:
+        """
+        Get the start point of the bottom edge from the geometry
+        
+        Returns:
+            Tuple with coordinates of the start point
+        """
+        bottom_edge = self.get_bottom_edge()
+        return bottom_edge.get('start_point', (0.0, 0.0, 0.0))
+    
+    def get_end_point_bottom(self) -> Tuple[float, float, float]:
+        """
+        Get the end point of the bottom edge from the geometry
+        
+        Returns:
+            Tuple with coordinates of the end point
+        """
+        bottom_edge = self.get_bottom_edge()
+        return bottom_edge.get('end_point', (0.0, 0.0, 0.0))
+       
+    
 @dataclass
 class Space:
     """
@@ -322,9 +380,8 @@ class Space:
     boundaries: List[Boundary] = field(default_factory=list)
     volume: float = 0.0
     area: float = 0.0
-
     relationships: Dict[str, List[Relationship]] = field(default_factory=lambda: defaultdict(list))
-
+    topology: Optional[Cell] = None  # Topologic cell representing the space
 
     
 
@@ -405,8 +462,9 @@ class Model:
 
 
     ### Bounds
-    def heal_boundaries(self, max_extension: float = 2.0, extension_step: float = 0.01, max_iterations: int = 200):
+    def heal_boundaries(self, dimentions: str = "3d", max_extension: float = 2.0, extension_step: float = 0.01, max_iterations: int = 200):
         """
+        2D Boundary Healing:
         Heal boundaries by interpreting them as lines and calculating direct intersections.
         Much more efficient than iterative extension.
         
@@ -414,191 +472,478 @@ class Model:
             max_extension: Maximum distance to extend any boundary (in meters)
             extension_step: Not used in direct intersection approach
             max_iterations: Not used in direct intersection approach
+
+
+
+        3D Boundary Healing:
+        Heal boundaries by interpreting them as planes and calculating direct intersections.
+
         """
         print(f"Starting boundary healing process with {len(self.boundaries)} boundaries...")
         
-        healed_pairs = set()  # Track which boundary pairs have been healed
-        
-        for boundary_id, boundary in self.boundaries.items():
-            if not hasattr(boundary, 'geometry') or not boundary.geometry:
-                continue
-                
-            # find the boundaries that refer the the adjacent items to the base_item of the boundary
-            base_item_relationships = self.relationships[boundary.base_item.id]
-            adjacent_boundaries = []
-            for r in base_item_relationships:
-                if isinstance(r, AdjacentTo):
-                    target_item = r.target
-                    # check if there is a boundary for this target item
-                    try:
-                        target_object = self.objects[target_item]
-                        if not hasattr(target_object, 'boundary_id'):
-                            continue  # Skip if no boundary_id exists
-                        target_boundary = target_object.boundary_id
-                        target_boundary = self.boundaries[target_boundary]
-                        adjacent_boundaries.append(target_boundary)
-                    except KeyError:
-                        # If no boundary exists for this target item, we can skip it
+        if dimentions == '2d':
+            healed_pairs = set()  # Track which boundary pairs have been healed
+            
+            for boundary_id, boundary in self.boundaries.items():
+                if not hasattr(boundary, 'geometry') or not boundary.geometry:
+                    continue
+                    
+                # find the boundaries that refer the the adjacent items to the base_item of the boundary
+                base_item_relationships = self.relationships[boundary.base_item.id]
+                adjacent_boundaries = []
+                for r in base_item_relationships:
+                    if isinstance(r, AdjacentTo):
+                        target_item = r.target
+                        # check if there is a boundary for this target item
+                        try:
+                            target_object = self.objects[target_item]
+                            if not hasattr(target_object, 'boundary_id'):
+                                continue  # Skip if no boundary_id exists
+                            target_boundary = target_object.boundary_id
+                            target_boundary = self.boundaries[target_boundary]
+                            adjacent_boundaries.append(target_boundary)
+                        except KeyError:
+                            # If no boundary exists for this target item, we can skip it
+                            continue
+                        
+                for adj_boundary in adjacent_boundaries:
+                    pair_key = tuple(sorted([boundary_id, adj_boundary.id]))
+                    if pair_key in healed_pairs:
+                        continue  # Already healed this pair
+                    
+                    # Check current intersection status
+                    intersects = boundary.geometry.bbox_intersects(adj_boundary.geometry)
+                    
+                    if intersects:
+                        print(f"Boundaries {boundary_id} and {adj_boundary.id} already intersect")
+                        healed_pairs.add(pair_key)
                         continue
-                    
-            for adj_boundary in adjacent_boundaries:
-                pair_key = tuple(sorted([boundary_id, adj_boundary.id]))
-                if pair_key in healed_pairs:
-                    continue  # Already healed this pair
-                
-                # Check current intersection status
-                intersects = boundary.geometry.bbox_intersects(adj_boundary.geometry)
-                
-                if intersects:
-                    print(f"Boundaries {boundary_id} and {adj_boundary.id} already intersect")
-                    healed_pairs.add(pair_key)
-                    continue
 
-                # get bottom edge of the boundary
-                start_point = boundary.start_point_bottom
-                end_point = boundary.end_point_bottom
+                    # get bottom edge of the boundary
+                    start_point = boundary.get_start_point_bottom()
+                    end_point = boundary.get_end_point_bottom()
 
-                # line function y = mx + b
-                m = (end_point[1] - start_point[1]) / (end_point[0] - start_point[0]) if end_point[0] != start_point[0] else float('inf')
-                b = start_point[1] - m * start_point[0] if m != float('inf') else start_point[0]
+                    # line function y = mx + b
+                    m = (end_point[1] - start_point[1]) / (end_point[0] - start_point[0]) if end_point[0] != start_point[0] else float('inf')
+                    b = start_point[1] - m * start_point[0] if m != float('inf') else start_point[0]
 
-                # line function adj y = m_adj * x + b_adj
-                adj_start_point = adj_boundary.start_point_bottom
-                adj_end_point = adj_boundary.end_point_bottom
-                m_adj = (adj_end_point[1] - adj_start_point[1]) / (adj_end_point[0] - adj_start_point[0]) if adj_end_point[0] != adj_start_point[0] else float('inf')
-                b_adj = adj_start_point[1] - m_adj * adj_start_point[0] if m_adj != float('inf') else adj_start_point[0]
+                    # line function adj y = m_adj * x + b_adj
+                    adj_start_point = adj_boundary.get_start_point_bottom()
+                    adj_end_point = adj_boundary.get_end_point_bottom()
+                    m_adj = (adj_end_point[1] - adj_start_point[1]) / (adj_end_point[0] - adj_start_point[0]) if adj_end_point[0] != adj_start_point[0] else float('inf')
+                    b_adj = adj_start_point[1] - m_adj * adj_start_point[0] if m_adj != float('inf') else adj_start_point[0]
 
-                # Calculate intersection point
-                if m == m_adj:
-                    print(f"Boundaries {boundary_id} and {adj_boundary.id} are parallel, skipping healing")
-                    continue
-                if m == float('inf'):
-                    # Boundary is vertical
-                    intersection_x = start_point[0]
-                    intersection_y = m_adj * intersection_x + b_adj
-                elif m_adj == float('inf'):
-                    # Adjacent boundary is vertical
-                    intersection_x = adj_start_point[0]
-                    intersection_y = m * intersection_x + b
-                else:
-                    # Solve for intersection
-                    intersection_x = (b_adj - b) / (m - m_adj)
-                    intersection_y = m * intersection_x + b
+                    # Calculate intersection point
+                    if m == m_adj:
+                        print(f"Boundaries {boundary_id} and {adj_boundary.id} are parallel, skipping healing")
+                        continue
+                    if m == float('inf'):
+                        # Boundary is vertical
+                        intersection_x = start_point[0]
+                        intersection_y = m_adj * intersection_x + b_adj
+                    elif m_adj == float('inf'):
+                        # Adjacent boundary is vertical
+                        intersection_x = adj_start_point[0]
+                        intersection_y = m * intersection_x + b
+                    else:
+                        # Solve for intersection
+                        intersection_x = (b_adj - b) / (m - m_adj)
+                        intersection_y = m * intersection_x + b
 
-                intersection_point = (intersection_x, intersection_y, start_point[2])  # Assuming z-coordinate is the same
-                # NEW APPROACH: Extend boundary face toward intersection, not edge collapse
-                intersection_x, intersection_y, intersection_z = intersection_point
+                    intersection_point = (intersection_x, intersection_y, start_point[2])  # Assuming z-coordinate is the same
+                    # NEW APPROACH: Extend boundary face toward intersection, not edge collapse
+                    intersection_x, intersection_y, intersection_z = intersection_point
 
-                # Get current boundary bounds
-                vertices_array = np.array(boundary.geometry.get_vertices())
-                min_x, max_x = vertices_array[:, 0].min(), vertices_array[:, 0].max()
-                min_y, max_y = vertices_array[:, 1].min(), vertices_array[:, 1].max()
+                    # Get current boundary bounds
+                    vertices_array = np.array(boundary.geometry.get_vertices())
+                    min_x, max_x = vertices_array[:, 0].min(), vertices_array[:, 0].max()
+                    min_y, max_y = vertices_array[:, 1].min(), vertices_array[:, 1].max()
 
-                tolerance = 0.01  # 1cm tolerance
+                    tolerance = 0.01  # 1cm tolerance
 
-                # Create updated vertices list
-                vertices_list = list(boundary.geometry.get_vertices())
+                    # Create updated vertices list
+                    vertices_list = list(boundary.geometry.get_vertices())
 
-                print(f"Boundary {boundary_id} bounds: X[{min_x:.3f}, {max_x:.3f}], Y[{min_y:.3f}, {max_y:.3f}]")
-                print(f"Intersection: ({intersection_x:.3f}, {intersection_y:.3f}, {intersection_z:.3f})")
+                    print(f"Boundary {boundary_id} bounds: X[{min_x:.3f}, {max_x:.3f}], Y[{min_y:.3f}, {max_y:.3f}]")
+                    print(f"Intersection: ({intersection_x:.3f}, {intersection_y:.3f}, {intersection_z:.3f})")
 
-                # Extend vertices toward intersection point while maintaining wall structure
-                vertices_modified = False
-                for i, vertex in enumerate(vertices_list):
-                    x, y, z = vertex
-                    new_vertex = [x, y, z]
-                    original_vertex = new_vertex.copy()
-                    
-                    # Extend in X direction if intersection is outside current bounds
-                    if intersection_x > max_x and abs(x - max_x) < tolerance:
-                        new_vertex[0] = intersection_x  # Extend max-X face
-                        vertices_modified = True
-                        print(f"Extended vertex {i} in +X direction: {vertex} -> {tuple(new_vertex)}")
-                    elif intersection_x < min_x and abs(x - min_x) < tolerance:
-                        new_vertex[0] = intersection_x  # Extend min-X face  
-                        vertices_modified = True
-                        print(f"Extended vertex {i} in -X direction: {vertex} -> {tuple(new_vertex)}")
+                    # Extend vertices toward intersection point while maintaining wall structure
+                    vertices_modified = False
+                    for i, vertex in enumerate(vertices_list):
+                        x, y, z = vertex
+                        new_vertex = [x, y, z]
+                        original_vertex = new_vertex.copy()
                         
-                    # Extend in Y direction if intersection is outside current bounds
-                    if intersection_y > max_y and abs(y - max_y) < tolerance:
-                        new_vertex[1] = intersection_y  # Extend max-Y face
-                        vertices_modified = True
-                        print(f"Extended vertex {i} in +Y direction: {vertex} -> {tuple(new_vertex)}")
-                    elif intersection_y < min_y and abs(y - min_y) < tolerance:
-                        new_vertex[1] = intersection_y  # Extend min-Y face
-                        vertices_modified = True
-                        print(f"Extended vertex {i} in -Y direction: {vertex} -> {tuple(new_vertex)}")
-                    
-                    vertices_list[i] = tuple(new_vertex)
-
-                if vertices_modified:
-                    print(f"Updated boundary geometry for {boundary_id} with new vertices: {vertices_list}")
-                else:
-                    print(f"No vertices modified for {boundary_id} - intersection may be within bounds")
-
-                # Update boundary geometry
-                original_faces = boundary.geometry.get_faces()
-                new_geometry = Geometry()
-                new_geometry.mesh_data['vertices'] = vertices_list  
-                new_geometry.mesh_data['faces'] = original_faces
-                new_geometry._generate_brep_from_mesh()
-                boundary.geometry = new_geometry
-
-                # SAME APPROACH for adjacent boundary
-                adj_vertices_array = np.array(adj_boundary.geometry.get_vertices())
-                adj_min_x, adj_max_x = adj_vertices_array[:, 0].min(), adj_vertices_array[:, 0].max()
-                adj_min_y, adj_max_y = adj_vertices_array[:, 1].min(), adj_vertices_array[:, 1].max()
-
-                print(f"Adjacent boundary {adj_boundary.id} bounds: X[{adj_min_x:.3f}, {adj_max_x:.3f}], Y[{adj_min_y:.3f}, {adj_max_y:.3f}]")
-
-                adj_vertices_list = list(adj_boundary.geometry.get_vertices())
-                adj_vertices_modified = False
-
-                for i, vertex in enumerate(adj_vertices_list):
-                    x, y, z = vertex
-                    new_vertex = [x, y, z]
-                    
-                    if intersection_x > adj_max_x and abs(x - adj_max_x) < tolerance:
-                        new_vertex[0] = intersection_x
-                        adj_vertices_modified = True
-                        print(f"Extended adjacent vertex {i} in +X direction: {vertex} -> {tuple(new_vertex)}")
-                    elif intersection_x < adj_min_x and abs(x - adj_min_x) < tolerance:
-                        new_vertex[0] = intersection_x
-                        adj_vertices_modified = True
-                        print(f"Extended adjacent vertex {i} in -X direction: {vertex} -> {tuple(new_vertex)}")
+                        # Extend in X direction if intersection is outside current bounds
+                        if intersection_x > max_x and abs(x - max_x) < tolerance:
+                            new_vertex[0] = intersection_x  # Extend max-X face
+                            vertices_modified = True
+                            print(f"Extended vertex {i} in +X direction: {vertex} -> {tuple(new_vertex)}")
+                        elif intersection_x < min_x and abs(x - min_x) < tolerance:
+                            new_vertex[0] = intersection_x  # Extend min-X face  
+                            vertices_modified = True
+                            print(f"Extended vertex {i} in -X direction: {vertex} -> {tuple(new_vertex)}")
+                            
+                        # Extend in Y direction if intersection is outside current bounds
+                        if intersection_y > max_y and abs(y - max_y) < tolerance:
+                            new_vertex[1] = intersection_y  # Extend max-Y face
+                            vertices_modified = True
+                            print(f"Extended vertex {i} in +Y direction: {vertex} -> {tuple(new_vertex)}")
+                        elif intersection_y < min_y and abs(y - min_y) < tolerance:
+                            new_vertex[1] = intersection_y  # Extend min-Y face
+                            vertices_modified = True
+                            print(f"Extended vertex {i} in -Y direction: {vertex} -> {tuple(new_vertex)}")
                         
-                    if intersection_y > adj_max_y and abs(y - adj_max_y) < tolerance:
-                        new_vertex[1] = intersection_y
-                        adj_vertices_modified = True
-                        print(f"Extended adjacent vertex {i} in +Y direction: {vertex} -> {tuple(new_vertex)}")
-                    elif intersection_y < adj_min_y and abs(y - adj_min_y) < tolerance:
-                        new_vertex[1] = intersection_y
-                        adj_vertices_modified = True
-                        print(f"Extended adjacent vertex {i} in -Y direction: {vertex} -> {tuple(new_vertex)}")
+                        vertices_list[i] = tuple(new_vertex)
+
+                    if vertices_modified:
+                        print(f"Updated boundary geometry for {boundary_id} with new vertices: {vertices_list}")
+                    else:
+                        print(f"No vertices modified for {boundary_id} - intersection may be within bounds")
+
+                    # Update boundary geometry
+                    original_faces = boundary.geometry.get_faces()
+                    new_geometry = Geometry()
+                    new_geometry.mesh_data['vertices'] = vertices_list  
+                    new_geometry.mesh_data['faces'] = original_faces
+                    new_geometry._generate_brep_from_mesh()
+                    boundary.geometry = new_geometry
+
+                    # SAME APPROACH for adjacent boundary
+                    adj_vertices_array = np.array(adj_boundary.geometry.get_vertices())
+                    adj_min_x, adj_max_x = adj_vertices_array[:, 0].min(), adj_vertices_array[:, 0].max()
+                    adj_min_y, adj_max_y = adj_vertices_array[:, 1].min(), adj_vertices_array[:, 1].max()
+
+                    print(f"Adjacent boundary {adj_boundary.id} bounds: X[{adj_min_x:.3f}, {adj_max_x:.3f}], Y[{adj_min_y:.3f}, {adj_max_y:.3f}]")
+
+                    adj_vertices_list = list(adj_boundary.geometry.get_vertices())
+                    adj_vertices_modified = False
+
+                    for i, vertex in enumerate(adj_vertices_list):
+                        x, y, z = vertex
+                        new_vertex = [x, y, z]
+                        
+                        if intersection_x > adj_max_x and abs(x - adj_max_x) < tolerance:
+                            new_vertex[0] = intersection_x
+                            adj_vertices_modified = True
+                            print(f"Extended adjacent vertex {i} in +X direction: {vertex} -> {tuple(new_vertex)}")
+                        elif intersection_x < adj_min_x and abs(x - adj_min_x) < tolerance:
+                            new_vertex[0] = intersection_x
+                            adj_vertices_modified = True
+                            print(f"Extended adjacent vertex {i} in -X direction: {vertex} -> {tuple(new_vertex)}")
+                            
+                        if intersection_y > adj_max_y and abs(y - adj_max_y) < tolerance:
+                            new_vertex[1] = intersection_y
+                            adj_vertices_modified = True
+                            print(f"Extended adjacent vertex {i} in +Y direction: {vertex} -> {tuple(new_vertex)}")
+                        elif intersection_y < adj_min_y and abs(y - adj_min_y) < tolerance:
+                            new_vertex[1] = intersection_y
+                            adj_vertices_modified = True
+                            print(f"Extended adjacent vertex {i} in -Y direction: {vertex} -> {tuple(new_vertex)}")
+                        
+                        adj_vertices_list[i] = tuple(new_vertex)
+
+                    if adj_vertices_modified:
+                        print(f"Updated adjacent boundary geometry for {adj_boundary.id} with new vertices: {adj_vertices_list}")
+                    else:
+                        print(f"No vertices modified for adjacent boundary {adj_boundary.id}")
+
+                    # Update adjacent boundary geometry
+                    adj_original_faces = adj_boundary.geometry.get_faces()
+                    new_adj_geometry = Geometry()
+                    new_adj_geometry.mesh_data['vertices'] = adj_vertices_list
+                    new_adj_geometry.mesh_data['faces'] = adj_original_faces  
+                    new_adj_geometry._generate_brep_from_mesh()
+                    adj_boundary.geometry = new_adj_geometry
+
+                    # Add healed pair to set
+                    self.boundaries[boundary.id] = boundary
+                    self.boundaries[adj_boundary.id] = adj_boundary
+
+            print(f"Boundary healing process completed. Healed {len(healed_pairs)} pairs of boundaries.")
+        elif dimentions == '3d':
+            """
+            3D Boundary Healing:
+            Heal boundaries by interpreting them as planes and calculating direct intersections.
+            """
+            def plane_from_triangle(vertices):
+                p0, p1, p2 = [np.array(v) for v in vertices]
+                normal = np.cross(p1 - p0, p2 - p0)
+                normal = normal / np.linalg.norm(normal)
+                A, B, C = normal
+                D = np.dot(normal, p0)
+                return A, B, C, D, normal
+
+            def intersect_planes(plane1, plane2):
+                A1, B1, C1, D1, n1 = plane1
+                A2, B2, C2, D2, n2 = plane2
+
+                # Direction of intersection line
+                direction = np.cross(n1, n2)
+                if np.allclose(direction, 0):
+                    return None  # planes are parallel or coincident
+
+                # Solve system by fixing one coordinate (e.g., z = 0)
+                A = np.array([[A1, B1], [A2, B2]])
+                b = np.array([D1, D2])
+                try:
+                    if abs(np.linalg.det(A)) > 1e-6:
+                        x, y = np.linalg.solve(A, b)
+                        point = np.array([x, y, 0])
+                    else:
+                        # Try fixing y = 0
+                        A = np.array([[A1, C1], [A2, C2]])
+                        b = np.array([D1, D2])
+                        if abs(np.linalg.det(A)) > 1e-6:
+                            x, z = np.linalg.solve(A, b)
+                            point = np.array([x, 0, z])
+                        else:
+                            # Try fixing x = 0
+                            A = np.array([[B1, C1], [B2, C2]])
+                            b = np.array([D1, D2])
+                            y, z = np.linalg.solve(A, b)
+                            point = np.array([0, y, z])
+                except np.linalg.LinAlgError:
+                    return None
+
+                return {
+                    "point": point,
+                    "direction": direction / np.linalg.norm(direction)
+                }
+
+            healed_pairs = set()  # Track which boundary pairs have been healed
+            
+            for boundary_id, boundary in self.boundaries.items():
+                if not hasattr(boundary, 'geometry') or not boundary.geometry:
+                    continue
                     
-                    adj_vertices_list[i] = tuple(new_vertex)
-
-                if adj_vertices_modified:
-                    print(f"Updated adjacent boundary geometry for {adj_boundary.id} with new vertices: {adj_vertices_list}")
-                else:
-                    print(f"No vertices modified for adjacent boundary {adj_boundary.id}")
-
-                # Update adjacent boundary geometry
-                adj_original_faces = adj_boundary.geometry.get_faces()
-                new_adj_geometry = Geometry()
-                new_adj_geometry.mesh_data['vertices'] = adj_vertices_list
-                new_adj_geometry.mesh_data['faces'] = adj_original_faces  
-                new_adj_geometry._generate_brep_from_mesh()
-                adj_boundary.geometry = new_adj_geometry
-
-                # Add healed pair to set
-                self.boundaries[boundary.id] = boundary
-                self.boundaries[adj_boundary.id] = adj_boundary
-
-        print(f"Boundary healing process completed. Healed {len(healed_pairs)} pairs of boundaries.")
+                # find the boundaries that refer the the adjacent items to the base_item of the boundary
+                base_item_relationships = self.relationships[boundary.base_item.id]
+                adjacent_boundaries = []
+                for r in base_item_relationships:
+                    if isinstance(r, AdjacentTo):
+                        target_item = r.target
+                        # check if there is a boundary for this target item
+                        try:
+                            target_object = self.objects[target_item]
+                            if not hasattr(target_object, 'boundary_id'):
+                                continue  # Skip if no boundary_id exists
+                            target_boundary = target_object.boundary_id
+                            target_boundary = self.boundaries[target_boundary]
+                            adjacent_boundaries.append(target_boundary)
+                        except KeyError:
+                            # If no boundary exists for this target item, we can skip it
+                            continue
+                        
+                for adj_boundary in adjacent_boundaries:
+                    pair_key = tuple(sorted([boundary_id, adj_boundary.id]))
+                    if pair_key in healed_pairs:
+                        continue  # Already healed this pair
                     
+                    # Check current intersection status
+                    intersects = boundary.geometry.bbox_intersects(adj_boundary.geometry)
+                    
+                    if intersects:
+                        print(f"Boundaries {boundary_id} and {adj_boundary.id} already intersect")
+                        healed_pairs.add(pair_key)
+                        
+                        # Split boundary @ the intersection line between the two boundaries
+                        boundary_plane = plane_from_triangle(boundary.geometry.get_vertices()[0:3])
+                        adj_boundary_plane = plane_from_triangle(adj_boundary.geometry.get_vertices()[0:3])
+                        intersection = intersect_planes(boundary_plane, adj_boundary_plane)
+                        
+                        if intersection is None:
+                            continue  # skip if planes are parallel or degenerate
 
-    def infer_bounds(self):
+                        # Step 2: Define local coordinate system for boundary's plane
+                        verts_3d = [np.array(v) for v in boundary.geometry.get_vertices()]
+                        origin = verts_3d[0]
+                        v1 = verts_3d[1] - origin
+                        v2 = verts_3d[2] - origin
+                        normal = np.cross(v1, v2)
+                        normal /= np.linalg.norm(normal)
+                        u = v1 / np.linalg.norm(v1)
+                        w = np.cross(normal, u)
+
+                        def project_to_2d(pt):
+                            rel = pt - origin
+                            return np.dot(rel, u), np.dot(rel, w)
+
+                        def project_to_3d(xy):
+                            return origin + xy[0] * u + xy[1] * w
+
+                        # Step 3: Project geometry to 2D
+                        from shapely.geometry import Polygon, LineString
+                        from shapely.ops import split as shapely_split
+
+                        polygon_2d = Polygon([project_to_2d(v) for v in verts_3d])
+                        line_2d = LineString([
+                            project_to_2d(intersection['point']),
+                            project_to_2d(intersection['point'] + intersection['direction'] * 1000)  # extend line
+                        ])
+
+                        if not polygon_2d.intersects(line_2d):
+                            print(f"No 2D intersection between boundary {boundary_id} and line")
+                            continue
+
+                        split_result = shapely_split(polygon_2d, line_2d)
+
+                        # Step 4: Select largest piece by area
+                        largest_poly_2d = max(split_result.geoms, key=lambda p: p.area)
+                        largest_verts_3d = [tuple(project_to_3d(pt)) for pt in largest_poly_2d.exterior.coords]
+
+
+                        faces = triangulate_polygon_3d(largest_verts_3d)  # custom or helper function you may already have
+                        boundary.geometry.mesh_data['vertices'] = largest_verts_3d
+                        boundary.geometry.mesh_data['faces'] = faces
+                        boundary.geometry._generate_brep_from_mesh()
+                        
+                        # Add healed pair to set
+                        self.boundaries[boundary.id] = boundary
+                        self.boundaries[adj_boundary.id] = adj_boundary
+
+                        continue
+
+
+                    # They do not intersect, so we need to extend them towards each other
+                    boundary_plane = plane_from_triangle(boundary.geometry.get_vertices()[0:3])
+                    adj_boundary_plane = plane_from_triangle(adj_boundary.geometry.get_vertices()[0:3])
+                    intersection_point = intersect_planes(boundary_plane, adj_boundary_plane)['point']
+                    
+                    # NEW APPROACH: Extend boundary face toward intersection, not edge collapse
+                    intersection_x, intersection_y, intersection_z = intersection_point
+
+                    # Get current boundary bounds
+                    vertices_array = np.array(boundary.geometry.get_vertices())
+                    min_x, max_x = vertices_array[:, 0].min(), vertices_array[:, 0].max()
+                    min_y, max_y = vertices_array[:, 1].min(), vertices_array[:, 1].max()
+
+                    tolerance = 0.01  # 1cm tolerance
+
+                    # Create updated vertices list
+                    vertices_list = list(boundary.geometry.get_vertices())
+
+                    print(f"Boundary {boundary_id} bounds: X[{min_x:.3f}, {max_x:.3f}], Y[{min_y:.3f}, {max_y:.3f}]")
+                    print(f"Intersection: ({intersection_x:.3f}, {intersection_y:.3f}, {intersection_z:.3f})")
+
+                    # Extend vertices toward intersection point while maintaining wall structure
+                    vertices_modified = False
+                    for i, vertex in enumerate(vertices_list):
+                        x, y, z = vertex
+                        new_vertex = [x, y, z]
+                        original_vertex = new_vertex.copy()
+                        
+                        # Extend in X direction if intersection is outside current bounds
+                        if intersection_x > max_x and abs(x - max_x) < tolerance:
+                            new_vertex[0] = intersection_x  # Extend max-X face
+                            vertices_modified = True
+                            print(f"Extended vertex {i} in +X direction: {vertex} -> {tuple(new_vertex)}")
+                        elif intersection_x < min_x and abs(x - min_x) < tolerance:
+                            new_vertex[0] = intersection_x  # Extend min-X face  
+                            vertices_modified = True
+                            print(f"Extended vertex {i} in -X direction: {vertex} -> {tuple(new_vertex)}")
+                            
+                        # Extend in Y direction if intersection is outside current bounds
+                        if intersection_y > max_y and abs(y - max_y) < tolerance:
+                            new_vertex[1] = intersection_y  # Extend max-Y face
+                            vertices_modified = True
+                            print(f"Extended vertex {i} in +Y direction: {vertex} -> {tuple(new_vertex)}")
+                        elif intersection_y < min_y and abs(y - min_y) < tolerance:
+                            new_vertex[1] = intersection_y  # Extend min-Y face
+                            vertices_modified = True
+                            print(f"Extended vertex {i} in -Y direction: {vertex} -> {tuple(new_vertex)}")
+
+                        # Extend in Z direction if intersection is outside current bounds
+                        if intersection_z > max(vertices_array[:, 2]) and abs(z - max(vertices_array[:, 2])) < tolerance:
+                            new_vertex[2] = intersection_z
+                            vertices_modified = True
+                            print(f"Extended vertex {i} in +Z direction: {vertex} -> {tuple(new_vertex)}")
+                        elif intersection_z < min(vertices_array[:, 2]) and abs(z - min(vertices_array[:, 2])) < tolerance:
+                            new_vertex[2] = intersection_z
+                            vertices_modified = True
+                            print(f"Extended vertex {i} in -Z direction: {vertex} -> {tuple(new_vertex)}")
+                        
+                        vertices_list[i] = tuple(new_vertex)
+
+                    if vertices_modified:
+                        print(f"Updated boundary geometry for {boundary_id} with new vertices: {vertices_list}")
+                    else:
+                        print(f"No vertices modified for {boundary_id} - intersection may be within bounds")
+
+                    # Update boundary geometry
+                    original_faces = boundary.geometry.get_faces()
+                    new_geometry = Geometry()
+                    new_geometry.mesh_data['vertices'] = vertices_list  
+                    new_geometry.mesh_data['faces'] = original_faces
+                    new_geometry._generate_brep_from_mesh()
+                    boundary.geometry = new_geometry
+
+                    # SAME APPROACH for adjacent boundary
+                    adj_vertices_array = np.array(adj_boundary.geometry.get_vertices())
+                    adj_min_x, adj_max_x = adj_vertices_array[:, 0].min(), adj_vertices_array[:, 0].max()
+                    adj_min_y, adj_max_y = adj_vertices_array[:, 1].min(), adj_vertices_array[:, 1].max()
+
+                    print(f"Adjacent boundary {adj_boundary.id} bounds: X[{adj_min_x:.3f}, {adj_max_x:.3f}], Y[{adj_min_y:.3f}, {adj_max_y:.3f}]")
+
+                    adj_vertices_list = list(adj_boundary.geometry.get_vertices())
+                    adj_vertices_modified = False
+
+                    for i, vertex in enumerate(adj_vertices_list):
+                        x, y, z = vertex
+                        new_vertex = [x, y, z]
+                        
+                        if intersection_x > adj_max_x and abs(x - adj_max_x) < tolerance:
+                            new_vertex[0] = intersection_x
+                            adj_vertices_modified = True
+                            print(f"Extended adjacent vertex {i} in +X direction: {vertex} -> {tuple(new_vertex)}")
+                        elif intersection_x < adj_min_x and abs(x - adj_min_x) < tolerance:
+                            new_vertex[0] = intersection_x
+                            adj_vertices_modified = True
+                            print(f"Extended adjacent vertex {i} in -X direction: {vertex} -> {tuple(new_vertex)}")
+                            
+                        if intersection_y > adj_max_y and abs(y - adj_max_y) < tolerance:
+                            new_vertex[1] = intersection_y
+                            adj_vertices_modified = True
+                            print(f"Extended adjacent vertex {i} in +Y direction: {vertex} -> {tuple(new_vertex)}")
+                        elif intersection_y < adj_min_y and abs(y - adj_min_y) < tolerance:
+                            new_vertex[1] = intersection_y
+                            adj_vertices_modified = True
+                            print(f"Extended adjacent vertex {i} in -Y direction: {vertex} -> {tuple(new_vertex)}")
+
+                        # Extend in Z direction if intersection is outside current bounds
+                        if intersection_z > max(adj_vertices_array[:, 2]) and abs(z - max(adj_vertices_array[:, 2])) < tolerance:
+                            new_vertex[2] = intersection_z
+                            adj_vertices_modified = True
+                            print(f"Extended adjacent vertex {i} in +Z direction: {vertex} -> {tuple(new_vertex)}")
+                        elif intersection_z < min(adj_vertices_array[:, 2]) and abs(z - min(adj_vertices_array[:, 2])) < tolerance:
+                            new_vertex[2] = intersection_z
+                            adj_vertices_modified = True
+                            print(f"Extended adjacent vertex {i} in -Z direction: {vertex} -> {tuple(new_vertex)}")
+                        
+                        adj_vertices_list[i] = tuple(new_vertex)
+
+                    if adj_vertices_modified:
+                        print(f"Updated adjacent boundary geometry for {adj_boundary.id} with new vertices: {adj_vertices_list}")
+                    else:
+                        print(f"No vertices modified for adjacent boundary {adj_boundary.id}")
+
+                    # Update adjacent boundary geometry
+                    adj_original_faces = adj_boundary.geometry.get_faces()
+                    new_adj_geometry = Geometry()
+                    new_adj_geometry.mesh_data['vertices'] = adj_vertices_list
+                    new_adj_geometry.mesh_data['faces'] = adj_original_faces  
+                    new_adj_geometry._generate_brep_from_mesh()
+                    adj_boundary.geometry = new_adj_geometry
+
+                    # Add healed pair to set
+                    self.boundaries[boundary.id] = boundary
+                    self.boundaries[adj_boundary.id] = adj_boundary
+            
+            
+
+                        
+
+    def infer_bounds(self, dimentions: str = "3d"):
         """
         Find bounds of spaces in the model by exploring walls and wall like objects to determine where spaces
         are located and split up.
@@ -615,11 +960,13 @@ class Model:
 
         # Find wall objects in the model that are of class Wall or inharit from Wall
         wall_objects = [obj for obj in self.objects.values() if isinstance(obj, Wall)]
+
+        deck_objects = [obj for obj in self.objects.values() if isinstance(obj, Deck)]
         # Find wall objects in the model that are of class Wall or inharit from Wall
 
         # for each wall determine if its a full height wall based on its adjacency relationships to decks at the top and the bottom
 
-
+        decks_connected_to_walls = {}
         for wall in wall_objects:
             decks = []
             # find the wall in the building graph and find its adjacency relationships
@@ -632,7 +979,7 @@ class Model:
                     target = self.objects[r.target]
                     if isinstance(target, Deck):
                         decks.append(target)
-
+                        decks_connected_to_walls[target.id] = target
             # determine the max z distance of the decks
             max_z = max([deck.get_centroid().z for deck in decks])
             min_z = min([deck.get_centroid().z for deck in decks])
@@ -651,8 +998,6 @@ class Model:
                     is_access_boundary=True,
                     is_visual_boundary=True,
                     base_item=wall,
-                    start_point_bottom=wall.get_centerplane_start_point_bottom(),
-                    end_point_bottom=wall.get_centerplane_end_point_bottom(),
                     height=wall_height,
                     normal_vector=wall.get_centerplane_normal_vector(),
                     adjacent_spaces=[]  # This will be filled later
@@ -665,8 +1010,6 @@ class Model:
                                              is_access_boundary=boundary.is_access_boundary,
                                              is_visual_boundary=boundary.is_visual_boundary,
                                              base_item=boundary.base_item,
-                                             start_point_bottom=boundary.start_point_bottom,
-                                             end_point_bottom=boundary.end_point_bottom,
                                              height=boundary.height,
                                              normal_vector=boundary.normal_vector, 
                                              centroid_x=wall.get_centroid().x,
@@ -684,8 +1027,6 @@ class Model:
                     is_access_boundary=True,
                     is_visual_boundary=True,
                     base_item=wall,
-                    start_point_bottom=wall.get_centerplane_start_point_bottom(),
-                    end_point_bottom=wall.get_centerplane_end_point_bottom(),
                     height=wall_height,
                     normal_vector=wall.get_centerplane_normal_vector(),
                     adjacent_spaces=[]  # This will be filled later
@@ -698,8 +1039,6 @@ class Model:
                                              is_access_boundary=boundary.is_access_boundary,
                                              is_visual_boundary=boundary.is_visual_boundary,
                                              base_item=boundary.base_item,
-                                             start_point_bottom=boundary.start_point_bottom,
-                                             end_point_bottom=boundary.end_point_bottom,
                                              height=boundary.height,
                                              normal_vector=boundary.normal_vector, 
                                              centroid_x=wall.get_centroid().x,
@@ -719,8 +1058,6 @@ class Model:
                     is_access_boundary=False,
                     is_visual_boundary=False,
                     base_item=wall,
-                    start_point_bottom=wall.get_centerplane_start_point_bottom(),
-                    end_point_bottom=wall.get_centerplane_end_point_bottom(),
                     height=wall_height,
                     normal_vector=wall.get_centerplane_normal_vector(),
                     adjacent_spaces=[]  # This will be filled later
@@ -733,8 +1070,6 @@ class Model:
                                             is_access_boundary=boundary.is_access_boundary,
                                             is_visual_boundary=boundary.is_visual_boundary,
                                             base_item=boundary.base_item,
-                                            start_point_bottom=boundary.start_point_bottom,
-                                            end_point_bottom=boundary.end_point_bottom,
                                             height=boundary.height,
                                             normal_vector=boundary.normal_vector,
                                             centroid_x=wall.get_centroid().x,
@@ -743,9 +1078,43 @@ class Model:
                 
                 # add boundary_id to the walls boundary_id attribute
                 wall.boundary_id = boundary.id
+        if dimentions == '3d':
+            for deck in decks_connected_to_walls.values():
+                # get the deck center plane geometry
+                deck_geometry = deck.get_centerplane_geometry()
+                # create a boundary for the deck
+                boundary = Boundary(
+                    id=generate_id('boundary'),
+                    type='deck',
+                    geometry=deck_geometry,
+                    is_access_boundary=True,
+                    is_visual_boundary=True,
+                    base_item=deck,
+                    height=deck.get_height(),
+                    normal_vector=deck.get_centerplane_normal_vector(),
+                    adjacent_spaces=[]  # This will be filled later
+                )
+                self.boundaries[boundary.id] = boundary
+                self.boundary_graph.add_node(boundary.id,
+                                                type=boundary.type,
+                                                geometry=boundary.geometry,
+                                                is_access_boundary=boundary.is_access_boundary,
+                                                is_visual_boundary=boundary.is_visual_boundary,
+                                                base_item=boundary.base_item,
+                                                height=boundary.height,
+                                                normal_vector=boundary.normal_vector, 
+                                                centroid_x=deck.get_centroid().x,
+                                                centroid_y=deck.get_centroid().y,
+                                                centroid_z=deck.get_centroid().z)
+                # add boundary_id to the decks boundary_id attribute
+                deck.boundary_id = boundary.id
+            else:
+                # Don't process decks
+                pass
+
                 
         # Now lets heal the boundaries by finding intersections and extending them
-        self.heal_boundaries()
+        self.heal_boundaries(dimentions=dimentions)
 
         # Now lets create the adjacency relationships between boundaries
         for boundary_id, boundary in self.boundaries.items():
@@ -757,6 +1126,8 @@ class Model:
                 if boundary.geometry.mesh_intersects(other_boundary.geometry):
                     # Create adjacency relationship
                     rel = AdjacentTo(boundary_id, other_boundary_id)
+                    boundary.relationships.append(rel)
+                    
                     self.relationships[boundary_id].append(rel)
                     self.boundary_graph.add_edge(boundary_id, other_boundary_id, relationship=rel.type)
 
@@ -768,171 +1139,256 @@ class Model:
                 
         
 
-    def infer_spaces(self):
+    def infer_spaces(self, dimentions: str = "3d") -> List[Space]:
         """
         Infer spaces by finding boundary cycles in the boundary graph (networkx) whose edges form closed loops.
         This method will create Space objects from the boundaries and their relationships.
         Returns:
             List[Space]: A list of Space objects representing the inferred spaces.
         """
-        from shapely.geometry import Polygon, LineString, Point
-        from shapely.ops import linemerge
+        if dimentions == '2d':
+    
+           
 
-        def cut_line_at_points(line, points):
-            # First coords of line
-            coords = list(line.coords)
+            # Function to cut a line at given points
+            from shapely.geometry import Polygon, LineString, Point
+            from shapely.ops import linemerge
 
-            # Keep list coords where to cut (cuts = 1)
-            cuts = [0] * len(coords)
-            cuts[0] = 1
-            cuts[-1] = 1
+            def cut_line_at_points(line, points):
+                # First coords of line
+                coords = list(line.coords)
 
-            # Add the coords from the points
-            coords += [list(p.coords)[0] for p in points]    
-            cuts += [1] * len(points)        
+                # Keep list coords where to cut (cuts = 1)
+                cuts = [0] * len(coords)
+                cuts[0] = 1
+                cuts[-1] = 1
 
-            # Calculate the distance along the line for each point    
-            dists = [line.project(Point(p)) for p in coords]    
-            # sort the coords/cuts based on the distances    
-            # see http://stackoverflow.com/questions/6618515/sorting-list-based-on-values-from-another-list    
-            coords = [p for (d, p) in sorted(zip(dists, coords))]    
-            cuts = [p for (d, p) in sorted(zip(dists, cuts))]          
+                # Add the coords from the points
+                coords += [list(p.coords)[0] for p in points]    
+                cuts += [1] * len(points)        
 
-            # generate the Lines    
-            #lines = [LineString([coords[i], coords[i+1]]) for i in range(len(coords)-1)]    
-            lines = []        
+                # Calculate the distance along the line for each point    
+                dists = [line.project(Point(p)) for p in coords]    
+                # sort the coords/cuts based on the distances    
+                # see http://stackoverflow.com/questions/6618515/sorting-list-based-on-values-from-another-list    
+                coords = [p for (d, p) in sorted(zip(dists, coords))]    
+                cuts = [p for (d, p) in sorted(zip(dists, cuts))]          
 
-            for i in range(len(coords)-1):    
-                if cuts[i] == 1:    
-                    # find next element in cuts == 1 starting from index i + 1   
-                    j = cuts.index(1, i + 1)    
-                    lines.append(LineString(coords[i:j+1]))            
+                # generate the Lines    
+                #lines = [LineString([coords[i], coords[i+1]]) for i in range(len(coords)-1)]    
+                lines = []        
 
-            return lines
-        
+                for i in range(len(coords)-1):    
+                    if cuts[i] == 1:    
+                        # find next element in cuts == 1 starting from index i + 1   
+                        j = cuts.index(1, i + 1)    
+                        lines.append(LineString(coords[i:j+1]))            
 
-        # # Step 1: Find and normalize unique cycles
-        # all_cycles = list(nx.simple_cycles(self.boundary_graph))
-        # unique_cycles = deduplicate_cycles_by_nodes(all_cycles)
+                return lines
+            
 
-        # find basis_cycles in the boundary graph
-        unique_cycles = list(nx.cycle_basis(self.boundary_graph))
-        
-        print(f"Found {len(unique_cycles)} cycles in the boundary graph.")
-        for cycle in unique_cycles:
-            # determine if the cycle is a valid space by checking if the normal vectors of the boundaries are consistent
-            cycle_boundaries = [self.boundaries[b_id] for b_id in cycle]
-            if not cycle_boundaries:
-                continue
-            # check if you plot the bottom edges of the boundaries in the cycle they form a closed polygon
-            bottom_edges = [boundary.get_bottom_edge() for boundary in cycle_boundaries]
-            if not bottom_edges:
-                continue
-            # Check if the bottom edges form a closed polygon
-            edge_lines = []
-            for edge in bottom_edges:
-                start = edge['start_point']
-                end = edge['end_point']
-                edge_lines.append(LineString([start, end]))
-            # Create a polygon from the bottom edges by extracting their start and end points and combining them as vertices
+            # # Step 1: Find and normalize unique cycles
+            # all_cycles = list(nx.simple_cycles(self.boundary_graph))
+            # unique_cycles = deduplicate_cycles_by_nodes(all_cycles)
 
-            # edge_vertices = [edge['start_point'] for edge in bottom_edges] + [edge['end_point'] for edge in bottom_edges]
-            # edge_vertices_ordered = Geometry.order_vertices_by_angle(edge_vertices)
-            # # add the first vertex to the end to close the polygon
-            # if edge_vertices_ordered[0] != edge_vertices_ordered[-1]:
-            #     edge_vertices_ordered.append(edge_vertices_ordered[0])
+            # find basis_cycles in the boundary graph
+            unique_cycles = list(nx.cycle_basis(self.boundary_graph))
+            
+            print(f"Found {len(unique_cycles)} cycles in the boundary graph.")
+            for cycle in unique_cycles:
+                # determine if the cycle is a valid space by checking if the normal vectors of the boundaries are consistent
+                cycle_boundaries = [self.boundaries[b_id] for b_id in cycle]
+                if not cycle_boundaries:
+                    continue
+                # check if you plot the bottom edges of the boundaries in the cycle they form a closed polygon
+                bottom_edges = [boundary.get_bottom_edge() for boundary in cycle_boundaries]
+                if not bottom_edges:
+                    continue
+                # Check if the bottom edges form a closed polygon
+                edge_lines = []
+                for edge in bottom_edges:
+                    start = edge['start_point']
+                    end = edge['end_point']
+                    edge_lines.append(LineString([start, end]))
+                # Create a polygon from the bottom edges by extracting their start and end points and combining them as vertices
 
-            # # combined_line = LineString(edge_vertices_ordered)
-            # combined_line = linemerge(edge_lines)
-            # Check if the combined line is closed
+                # edge_vertices = [edge['start_point'] for edge in bottom_edges] + [edge['end_point'] for edge in bottom_edges]
+                # edge_vertices_ordered = Geometry.order_vertices_by_angle(edge_vertices)
+                # # add the first vertex to the end to close the polygon
+                # if edge_vertices_ordered[0] != edge_vertices_ordered[-1]:
+                #     edge_vertices_ordered.append(edge_vertices_ordered[0])
 
-            # turn edge lines into a topologicpy Edge object
+                # # combined_line = LineString(edge_vertices_ordered)
+                # combined_line = linemerge(edge_lines)
+                # Check if the combined line is closed
 
-            topologic_edges = []
-            for edge in edge_lines:
-                s_v = Vertex.ByCoordinates(x=edge.coords[0][0], y=edge.coords[0][1], z=edge.coords[0][2])
-                e_v = Vertex.ByCoordinates(x=edge.coords[1][0], y=edge.coords[1][1], z=edge.coords[1][2])
-                topologic_edges.append(Edge.ByStartVertexEndVertex(s_v, e_v))
+                # turn edge lines into a topologicpy Edge object
 
-            face = Face.ByEdges(topologic_edges, tolerance=0.01)
-
-            if face:
-
-                space_id = generate_id('space')
-                cell = Cell.ByThickenedFace(face, thickness=max([boundary.height for boundary in cycle_boundaries]))
-                # Create geometry from the cell
-                geometry = Geometry.from_topology(cell)
-                space = Space(
-                    id=space_id,
-                    name=f"Space {space_id}",
-                    geometry=geometry,
-                    boundaries=cycle_boundaries,
-                    area=Face.Area(face) # Assuming area as a proxy for area in 2D
-                )
-                
-                self.spaces[space_id] = space
-
-            else:
-                # see if we can heal the boundaries by trimming them to form a closed polygon
-                print(f"Cycle {cycle} does not form a valid polygon, attempting to heal boundaries...")
-                # Attempt to heal boundaries by extending edges to form a closed polygon
-                edge_graph = nx.Graph()
-                points = []
-                cleaned_edges = {i: edge for i, edge in enumerate(edge_lines)}
-                for i in range(len(edge_lines)):
-                    for j in range(len(edge_lines)):
-                        edge = cleaned_edges[i]
-                        other_edge = cleaned_edges[j]
-                        if edge == other_edge:
-                            continue
-                        if edge.intersects(other_edge):
-                            intersection = edge.intersection(other_edge)
-                            if isinstance(intersection, Point):
-                                # split the edge at the intersection point
-                                cut_lines = cut_line_at_points(edge, [intersection])
-
-                                # find the largest line segment
-                                largest_line = max(cut_lines, key=lambda l: l.length)
-                                cleaned_edges[i]=largest_line
-                            elif isinstance(intersection, LineString):
-                                # If intersection is a line, take its endpoints
-                                continue
-                            
-                        else:
-                            continue # No intersection, keep original edge
-                # get edges as a list
-                cleaned_edges = list(cleaned_edges.values())
                 topologic_edges = []
-                for edge in cleaned_edges:
+                for edge in edge_lines:
                     s_v = Vertex.ByCoordinates(x=edge.coords[0][0], y=edge.coords[0][1], z=edge.coords[0][2])
                     e_v = Vertex.ByCoordinates(x=edge.coords[1][0], y=edge.coords[1][1], z=edge.coords[1][2])
                     topologic_edges.append(Edge.ByStartVertexEndVertex(s_v, e_v))
-                
+
                 face = Face.ByEdges(topologic_edges, tolerance=0.01)
+
                 if face:
-                    space_height = max([boundary.height for boundary in cycle_boundaries])
-                    cell = Cell.ByThickenedFace(face, thickness=space_height)
-                    
+
+                    space_id = generate_id('space')
+                    cell = Cell.ByThickenedFace(face, thickness=max([boundary.height for boundary in cycle_boundaries]))
                     # Create geometry from the cell
                     geometry = Geometry.from_topology(cell)
+                    space = Space(
+                        id=space_id,
+                        name=f"Space {space_id}",
+                        geometry=geometry,
+                        topology=cell,
+                        boundaries=cycle_boundaries,
+                        area=Face.Area(face) # Assuming area as a proxy for area in 2D
+                    )
+                    
+                    self.spaces[space_id] = space
+
+                else:
+                    # see if we can heal the boundaries by trimming them to form a closed polygon
+                    print(f"Cycle {cycle} does not form a valid polygon, attempting to heal boundaries...")
+                    # Attempt to heal boundaries by extending edges to form a closed polygon
+                    edge_graph = nx.Graph()
+                    points = []
+                    cleaned_edges = {i: edge for i, edge in enumerate(edge_lines)}
+                    for i in range(len(edge_lines)):
+                        for j in range(len(edge_lines)):
+                            edge = cleaned_edges[i]
+                            other_edge = cleaned_edges[j]
+                            if edge == other_edge:
+                                continue
+                            if edge.intersects(other_edge):
+                                intersection = edge.intersection(other_edge)
+                                if isinstance(intersection, Point):
+                                    # split the edge at the intersection point
+                                    cut_lines = cut_line_at_points(edge, [intersection])
+
+                                    # find the largest line segment
+                                    largest_line = max(cut_lines, key=lambda l: l.length)
+                                    cleaned_edges[i]=largest_line
+                                elif isinstance(intersection, LineString):
+                                    # If intersection is a line, take its endpoints
+                                    continue
+                                
+                            else:
+                                continue # No intersection, keep original edge
+                    # get edges as a list
+                    cleaned_edges = list(cleaned_edges.values())
+                    topologic_edges = []
+                    for edge in cleaned_edges:
+                        s_v = Vertex.ByCoordinates(x=edge.coords[0][0], y=edge.coords[0][1], z=edge.coords[0][2])
+                        e_v = Vertex.ByCoordinates(x=edge.coords[1][0], y=edge.coords[1][1], z=edge.coords[1][2])
+                        topologic_edges.append(Edge.ByStartVertexEndVertex(s_v, e_v))
+                    
+                    face = Face.ByEdges(topologic_edges, tolerance=0.01)
+                    if face:
+                        space_height = max([boundary.height for boundary in cycle_boundaries])
+                        cell = Cell.ByThickenedFace(face, thickness=space_height)
+                        
+                        # Create geometry from the cell
+                        geometry = Geometry.from_topology(cell)
+                        space_id = generate_id('space')
+                        space = Space(
+                            id=space_id,
+                            name=f"Space {space_id}",
+                            boundaries=cycle_boundaries,
+                            area=Face.Area(face),
+                            geometry=geometry,  # Assuming area as a proxy for area in 2D
+                            topology=cell
+                        )
+                        
+                        self.spaces[space_id] = space
+                
+        elif dimentions == '3d':
+            from itertools import combinations
+            def process_face_combo(combo):
+                # Local import of Face and Cell if needed, or pass them as globals depending on your env
+                try:
+                    normals = [Face.Normal(face) for face in combo]
+                    normals = np.array(normals)
+                    net = np.sum(normals, axis=0)
+                    magnitude = np.linalg.norm(net)
+
+                    if magnitude > 1:
+                        return (combo, magnitude, None)  # skip
+                    else:
+                        cell = Cell.ByFaces(list(combo), tolerance=0.01)
+                        return (combo, magnitude, cell)
+
+                except Exception as e:
+                    return (combo, float("inf"), None)  # error path
+
+            # TODO idea: How about we create topologic face objects from every boundary geometry and then we try all combinations of 4+ 
+            # and find those that create a closed volume?
+
+            
+            topologic_faces = []
+            for boundary in self.boundaries.values():
+                if not hasattr(boundary, 'geometry') or not boundary.geometry:
+                    continue
+                # Create a topologic face from the boundary geometry
+                topologic_vertices = [Vertex.ByCoordinates(x=v[0], y=v[1], z=v[2]) for v in boundary.geometry.get_vertices()]
+                topologic_face = Face.ByVertices(topologic_vertices, tolerance=0.01)
+                if topologic_face:
+                    topologic_faces.append(topologic_face)
+
+            # find all combinations of 4+ faces that form a closed volume
+            
+            # Step 1: Find all combinations of 4+ faces
+            all_combinations = []
+            for r in range(5, 15):
+                for combo in combinations(topologic_faces, r):
+                    all_combinations.append(combo)
+            print(f"Found {len(all_combinations)} combinations of 4+ faces.")
+            # Step 2: Check if each combination forms a closed volume
+            magnitudes = []
+            for combo in all_combinations:
+
+                # determine if all faces in the combo have normal vectors that point inward
+                normals = [Face.Normal(face) for face in combo]
+
+                normals = np.array(normals)
+
+                net = np.sum(normals, axis=0)
+
+                magnitude = np.linalg.norm(net)
+                magnitudes.append(magnitude)
+                if magnitude > 2:
+                    print(f"Combination {combo} does not form a closed volume, skipping...")
+                    continue
+                    
+
+                cell = Cell.ByFaces(list(combo), tolerance=0.01)
+
+                if cell:
+                    # Create geometry from the cell
+                    geometry = Geometry.from_topology(cell)
+
+                    # check if the geometry is the same as an existing space geometry
+                    existing_space_overlaps = [
+                        space for space in self.spaces.values() if space.geometry.bbox_intersects(geometry, return_overlap_percent=True) > 0.3
+                    ]
+                    if len(existing_space_overlaps) > 0:
+                        print(f"Found existing space with geometry")
+                        continue
                     space_id = generate_id('space')
                     space = Space(
                         id=space_id,
                         name=f"Space {space_id}",
-                        boundaries=cycle_boundaries,
-                        area=Face.Area(face),
-                        geometry=geometry  # Assuming area as a proxy for area in 2D
+                        geometry=geometry,
+                        topology=cell,
+                        boundaries=[b for b in self.boundaries.values() if b.geometry in combo],
+                        volume=Geometry.compute_volume(geometry)  # Assuming volume as a proxy for area in 3D
                     )
                     
                     self.spaces[space_id] = space
-                
-
-                
-
-
-            
-
-
+    def generate_adjacency_graph(self):
+        pass
 
 
     def show_boundaries(self):

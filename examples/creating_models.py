@@ -211,6 +211,7 @@ if __name__ == "__main__":
     model = Model.from_objects(objects)
     model.create_adjacency_relationships(tolerance=0.001)
     model.infer_bounds()
+    # model.show_boundaries_graph()
     model.infer_spaces()
     model.show_spaces()
     model.show_objects()
