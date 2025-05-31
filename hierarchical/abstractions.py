@@ -13,6 +13,9 @@ from topologicpy.Edge import Edge
 from topologicpy.Face import Face
 from topologicpy.Vertex import Vertex
 from topologicpy.Cell import Cell
+from topologicpy.Topology import Topology
+from topologicpy.Dictionary import Dictionary
+import plotly.graph_objects as go
 
 
 
@@ -383,7 +386,19 @@ class Space:
     relationships: Dict[str, List[Relationship]] = field(default_factory=lambda: defaultdict(list))
     topology: Optional[Cell] = None  # Topologic cell representing the space
 
-    
+    def centoid(self) -> Tuple[float, float, float]:
+        """
+        Calculate the centroid of the space based on its geometry.
+        
+        Returns:
+            Tuple with coordinates of the centroid
+        """
+        if not self.geometry or not self.geometry.get_vertices():
+            return (0.0, 0.0, 0.0)
+        
+        vertices = np.array(self.geometry.get_vertices())
+        return tuple(np.mean(vertices, axis=0))
+       
 
 class Model:
     """
@@ -444,6 +459,11 @@ class Model:
 
             model.building_graph.add_node(obj_id, **features)
 
+        model.create_adjacency_relationships(tolerance=0.001)
+        model.infer_bounds()
+        model.infer_spaces()
+        model.generate_adjacency_graph()
+        
 
         return model
 
@@ -1369,6 +1389,7 @@ class Model:
                     # Create geometry from the cell
                     geometry = Geometry.from_topology(cell)
 
+                    
                     # check if the geometry is the same as an existing space geometry
                     existing_space_overlaps = [
                         space for space in self.spaces.values() if space.geometry.bbox_intersects(geometry, return_overlap_percent=True) > 0.3
@@ -1377,6 +1398,12 @@ class Model:
                         print(f"Found existing space with geometry")
                         continue
                     space_id = generate_id('space')
+
+                    # add space_id to the cell
+                    cell_dict = Topology.Dictionary(cell)
+                    cell_dict = Dictionary.SetValueAtKey(cell_dict, 'space_id', space_id)
+                    cell = Topology.SetDictionary(cell, cell_dict)
+
                     space = Space(
                         id=space_id,
                         name=f"Space {space_id}",
@@ -1388,8 +1415,30 @@ class Model:
                     
                     self.spaces[space_id] = space
     def generate_adjacency_graph(self):
-        pass
+        """
+        Generates an adjacency graph using topologicpy and converts it into a graph with relationships
+        """
+        from topologicpy.CellComplex import CellComplex
+        from topologicpy.Graph import Graph
 
+        spaces = self.spaces.values()
+        if not spaces:
+            print("No spaces found to generate adjacency graph.")
+            return
+        space_topologies = [space.topology for space in spaces if space.topology is not None]
+        if not space_topologies:
+            print("No valid space topologies found to generate adjacency graph.")
+            return
+
+        space_complex = CellComplex.ByCells(space_topologies, tolerance=0.01, transferDictionaries=True)
+        
+        # Create a graph from the space complex
+        space_graph = Graph.ByTopology(space_complex, tolerance=0.01)
+
+        space_graph_nx = Graph.NetworkXGraph(space_graph)
+
+        self.space_adjacency_graph = space_graph_nx
+        
 
     def show_boundaries(self):
         """
@@ -1717,22 +1766,166 @@ class Model:
 
 
     def show_boundaries_graph(self):
-        # simple nx show
         """
-        Display the boundaries graph using NetworkX and Matplotlib.
+        Display the boundaries graph as a 3D network using Plotly.
+        Node positions will be inferred from face centroids if available,
+        otherwise a spring layout will be used.
         """
-        import networkx as nx
-        import matplotlib.pyplot as plt
-        
-        plt.figure(figsize=(12, 8))
-        pos = nx.spring_layout(self.boundary_graph, seed=42)
-        nx.draw(self.boundary_graph, pos, with_labels=True, node_size=700, node_color='lightblue', font_size=10, font_color='black', edge_color='gray')
+        G = self.boundary_graph
+        pos = {}
 
-        # show the node attributes as labels
-        node_labels = {node: f"{node}\n{data['type']}" for node, data in self.boundary_graph.nodes(data=True)}
-        nx.draw_networkx_labels(self.boundary_graph, pos, labels=node_labels, font_size=8, font_color='black')
-        plt.title("Boundaries Graph")
-        plt.show()
+        for node in G.nodes:
+            obj = self.boundaries.get(node)
+            if obj and hasattr(obj, "geometry"):
+                verts = obj.geometry.get_vertices()
+                center = np.mean(np.array(verts), axis=0)
+                pos[node] = center
+            else:
+                pos = nx.spring_layout(G, dim=3, seed=42)
+                break  # fallback if any missing geometry
+
+        edge_x, edge_y, edge_z = [], [], []
+        for u, v in G.edges():
+            x0, y0, z0 = pos[u]
+            x1, y1, z1 = pos[v]
+            edge_x += [x0, x1, None]
+            edge_y += [y0, y1, None]
+            edge_z += [z0, z1, None]
+
+        edge_trace = go.Scatter3d(
+            x=edge_x, y=edge_y, z=edge_z,
+            mode='lines',
+            line=dict(color='gray', width=2),
+            hoverinfo='none'
+        )
+
+        node_x, node_y, node_z, text = [], [], [], []
+        for node, (x, y, z) in pos.items():
+            node_x.append(x)
+            node_y.append(y)
+            node_z.append(z)
+            node_data = G.nodes[node]
+            text.append(f"{node}<br>{node_data.get('type', '')}")
+
+        node_trace = go.Scatter3d(
+            x=node_x, y=node_y, z=node_z,
+            mode='markers+text',
+            marker=dict(size=6, color='lightblue'),
+            text=text,
+            hoverinfo='text',
+            textposition='top center'
+        )
+
+        fig = go.Figure(data=[edge_trace, node_trace])
+        fig.update_layout(title='Boundaries Graph (3D)',
+                        scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Z'),
+                        margin=dict(l=0, r=0, b=0, t=40))
+
+                        
+        fig.show()
+
+    def show_spaces_graph(self):
+        """
+        Display the space adjacency graph in 3D using Plotly.
+        Positions are inferred from space geometry centroid or node attributes.
+        """
+        if not hasattr(self, 'space_adjacency_graph'):
+            print("No space adjacency graph found. Please generate it first.")
+            return
+
+        G = self.space_adjacency_graph
+        pos = {}
+
+        for node in G.nodes:
+            node_data = G.nodes[node]
+            space_id = node_data.get('space_id', None)
+            space = self.spaces.get(space_id, None)
+
+            coord = None
+            if space and hasattr(space, "geometry") and hasattr(space.geometry, "get_centroid"):
+                coord = space.geometry.get_centroid()
+            elif all(k in node_data for k in ('x', 'y', 'z')):
+                coord = (node_data['x'], node_data['y'], node_data['z'])
+
+            if coord:
+                pos[node] = coord
+
+        if not pos:
+            print("No valid coordinates found for any nodes.")
+            return
+
+        # Edges
+        edge_x, edge_y, edge_z = [], [], []
+        for u, v in G.edges():
+            if u in pos and v in pos:
+                _0 = pos[u]
+                _1 = pos[v]
+                x0 = _0.x if hasattr(_0, 'x') else _0[0]
+                y0 = _0.y if hasattr(_0, 'y') else _0[1]
+                z0 = _0.z if hasattr(_0, 'z') else _0[2]
+                x1 = _1.x if hasattr(_1, 'x') else _1[0]
+                y1 = _1.y if hasattr(_1, 'y') else _1[1]
+                z1 = _1.z if hasattr(_1, 'z') else _1[2]
+
+                edge_x += [x0, x1, None]
+                edge_y += [y0, y1, None]
+                edge_z += [z0, z1, None]
+
+        edge_trace = go.Scatter3d(
+            x=edge_x, y=edge_y, z=edge_z,
+            mode='lines',
+            line=dict(color='gray', width=2),
+            hoverinfo='none'
+        )
+
+        # Nodes
+        node_x, node_y, node_z, text = [], [], [], []
+        for node, (x, y, z) in pos.items():
+            node_x.append(x)
+            node_y.append(y)
+            node_z.append(z)
+            label = G.nodes[node].get('type') or G.nodes[node].get('category', '')
+            node_space_id = G.nodes[node].get('space_id', '')
+            if node_space_id:
+                label = f"{node_space_id}"
+            else:
+                label = f"{node}"
+
+            text.append(label)
+
+        node_trace = go.Scatter3d(
+            x=node_x, y=node_y, z=node_z,
+            mode='markers+text',
+            marker=dict(size=6, color='lightgreen'),
+            text=text,
+            hoverinfo='text',
+            textposition='top center'
+        )
+
+        # get the bounding box of the model
+        bbox = self.get_bounding_box()
+        if bbox:
+            min_x, min_y, min_z, max_x, max_y, max_z = bbox
+            fig = go.Figure(data=[edge_trace, node_trace])
+            fig.update_layout(
+                title='Spaces Graph (3D)',
+                scene=dict(
+                    xaxis=dict(range=[min_x, max_x], title='X'),
+                    yaxis=dict(range=[min_y, max_y], title='Y'),
+                    zaxis=dict(range=[min_z, max_z], title='Z')
+                ),
+                margin=dict(l=0, r=0, b=0, t=40)
+            )
+        else:
+
+            fig = go.Figure(data=[edge_trace, node_trace])
+            fig.update_layout(
+                title='Spaces Graph (3D)',
+                scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Z'),
+                margin=dict(l=0, r=0, b=0, t=40)
+            )
+
+        fig.show()
 
 
 
@@ -1798,4 +1991,36 @@ class Model:
         )
         
         fig.show()
+
+    def get_bounding_box(self):
+        """
+        Get the bounding box of the model by combining all objects, components, and elements.
+        Returns:
+            tuple: (min_x, min_y, min_z, max_x, max_y, max_z)
+        """
+        if not self.objects and not self.components and not self.elements:
+            return None
+        
+        all_geometries = []
+        for item in self.objects.values():
+            if hasattr(item, 'geometry'):
+                all_geometries.append(item.geometry)
+        for item in self.components.values():
+            if hasattr(item, 'geometry'):
+                all_geometries.append(item.geometry)
+        for item in self.elements.values():
+            if hasattr(item, 'geometry'):
+                all_geometries.append(item.geometry)
+
+        all_vertices = []
+        for geometry in all_geometries:
+            if hasattr(geometry, 'get_vertices'):
+                vertices = geometry.get_vertices()
+                all_vertices.extend(vertices)
+        if not all_vertices:
+            return None
+        all_vertices = np.array(all_vertices)
+        min_x, min_y, min_z = np.min(all_vertices, axis=0)
+        max_x, max_y, max_z = np.max(all_vertices, axis=0)
+        return (min_x, min_y, min_z, max_x, max_y, max_z)
     
