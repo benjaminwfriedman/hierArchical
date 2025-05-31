@@ -7,7 +7,7 @@ from copy import deepcopy
 from pathlib import Path
 from .units import UnitSystem, UnitSystems, UNIT_TO_METER
 from .relationships import EmbeddedIn, Embeds, PassesThrough, HasPassingThrough, Relationship, AdjacentTo
-
+from uuid import uuid4
 
 
 
@@ -16,8 +16,8 @@ from .relationships import EmbeddedIn, Embeds, PassesThrough, HasPassingThrough,
 class BaseItem:
     """Shared base class for all entities"""
 
-    # A unique UUID
-    id: str
+    # A human-readable name for the item
+    name: str
     
     # The geometry object describing the item's shape
     geometry: Geometry
@@ -47,6 +47,9 @@ class BaseItem:
     color: Optional[Tuple[float, float, float]] = None
 
     unit_system: UnitSystem = UnitSystem.METER
+
+    # A unique UUID
+    id: str = field(default_factory=lambda: str(uuid4()))
 
     def __repr__(self):
         """Lightweight representation for debugger"""
@@ -188,7 +191,6 @@ class BaseItem:
         geom_copy.right(dx).forward(dy).up(dz)
 
         return type(self)(
-            id=generate_id(self.type),
             name=self.name + " (copy)",
             type=self.type,
             geometry=geom_copy,
@@ -291,7 +293,6 @@ class BaseItem:
         
         self.relationships.append(
             EmbeddedIn(
-                id=generate_id("embedded_in"),
                 source=self,
                 target=other,
                 attributes={
@@ -307,7 +308,6 @@ class BaseItem:
         
         other.relationships.append(
             Embeds(
-                id=generate_id("embeds"),
                 source=other,
                 target=self,
                 attributes={
@@ -338,7 +338,6 @@ class BaseItem:
         # Add relationship to self
         self.relationships.append(
             AdjacentTo(
-                id=generate_id("adjacent_to"),
                 source=self,
                 target=other,
                 attributes={
@@ -353,7 +352,6 @@ class BaseItem:
         
         other.relationships.append(
             AdjacentTo(
-                id=generate_id("adjacent_to"),
                 source=other,
                 target=self,
                 attributes={
@@ -579,6 +577,7 @@ class Element(BaseItem):
     material: str = ""
 
     def __post_init__(self):
+        
         vol = self.geometry.compute_volume()
         self.materials = {
             self.material: {
@@ -586,6 +585,7 @@ class Element(BaseItem):
                 "percent": 1.0  # It's the only material
             }
         }
+
 
 @dataclass(slots=True)
 class Component(BaseItem):
@@ -608,7 +608,6 @@ class Component(BaseItem):
         }
 
         return cls(
-            id=kwargs.get("id", f"component_{name.lower().replace(' ', '_')}"),
             name=name,
             type=type,
             sub_items=elements,
@@ -616,7 +615,8 @@ class Component(BaseItem):
             materials=materials,
             **kwargs
         )
-
+    
+        
 @dataclass(slots=True)
 class Object(BaseItem):
     @classmethod
@@ -646,7 +646,6 @@ class Object(BaseItem):
         }
 
         return cls(
-            id=kwargs.get("id", f"object_{name.lower().replace(' ', '_')}"),
             name=name,
             type=type,
             sub_items=components,
@@ -654,6 +653,7 @@ class Object(BaseItem):
             materials=materials,
             **kwargs
         )
+    
     
     ##TODO: Add functionality to load IFC files in a way that determines the sub components as well.
     ## Currently it only loads the geometry of the object itself as one object.
@@ -698,7 +698,6 @@ class Object(BaseItem):
                 sub_geom = Geometry()
                 sub_items.append(
                     Element(
-                        id=generate_id("element"),
                         name=part.Name or "Sub Part",
                         type=part.is_a(),
                         geometry=sub_geom,
@@ -707,7 +706,6 @@ class Object(BaseItem):
                 )
 
         return cls(
-            id=generate_id(object_type),
             name=name,
             type=object_type.lower(),
             geometry=geometry,
@@ -719,6 +717,7 @@ class Object(BaseItem):
 class Wall(Object):
 
     boundary_id: Optional[str] = None
+
 
     @classmethod
     def from_components(
@@ -1213,6 +1212,7 @@ class Door(Object):
     swing_direction: Optional[str] = None
     panel_position: Optional[str] = None
 
+    
     @classmethod
     def from_components(
         cls,
@@ -1306,7 +1306,6 @@ class Door(Object):
                 sub_geom = Geometry()
                 sub_items.append(
                     Element(
-                        id=generate_id("element"),
                         name=part.Name or "Sub Part",
                         type=part.is_a(),
                         geometry=sub_geom,
@@ -1315,7 +1314,6 @@ class Door(Object):
                 )
 
         return cls(
-            id=generate_id(object_type),
             name=name,
             type="door",
             geometry=geometry,
@@ -1349,6 +1347,7 @@ class Deck(Object):
 
     boundary_id: Optional[str] = None
 
+    
     @classmethod
     def from_components(
         cls,

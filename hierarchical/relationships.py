@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Dict, Any
 from .helpers import generate_id
+from uuid import uuid4
 
 @dataclass(slots=True)
 class Relationship:
@@ -8,8 +9,9 @@ class Relationship:
     source: str
     target: str
     type: str
-    id: str = field(default="")
+    id: str = field(default_factory=lambda: str(uuid4()))
     attributes: Dict[str, Any] = field(default_factory=dict)
+    id: str = field(default_factory=lambda: str(uuid4()))
 
     def __post_init__(self):
         if not self.id:
@@ -82,3 +84,8 @@ class Supports(Relationship):
 class SupportedBy(Relationship):
     """Object 1 is supported by object 2 (inverse of Supports)."""
     type: str = field(default="supported_by", init=False)
+
+@dataclass(slots=True)
+class Creates(Relationship):
+    """Object 1 creates object 2 (e.g., a tool creating a part)."""
+    type: str = field(default="creates", init=False)
