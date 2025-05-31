@@ -17,6 +17,12 @@ class Vector3D:
     x: float = 0.0
     y: float = 0.0
     z: float = 0.0
+
+    def __iter__(self):
+        """Allow unpacking or iteration over the vector"""
+        yield self.x
+        yield self.y
+        yield self.z
     
     def as_tuple(self) -> Tuple[float, float, float]:
         """Return vector as tuple"""
