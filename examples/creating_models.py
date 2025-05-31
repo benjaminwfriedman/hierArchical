@@ -203,19 +203,13 @@ if __name__ == "__main__":
     # Instantiate the model
     model = Model.from_objects(objects)
     
-    # query building garph
-    res = model.building_graph.query_to_string(
-        "MATCH (o:Object) RETURN o"
-    )
-
-    print("Building Graph Query Result:")
-    print(res)
-
-    print(model.ask("What spaces are in the model?"))
+    
     # explore the model
     model.show_objects()
     model.show_spaces()
     model.show_spaces_graph()
+
+    print(model.ask("What spaces are in the model?"))
   
 
 

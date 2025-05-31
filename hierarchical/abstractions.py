@@ -19,10 +19,11 @@ import plotly.graph_objects as go
 import kuzu
 import uuid
 from uuid import uuid4
-import openai
+from openai import OpenAI
+
+client = OpenAI(api_key="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")
 
 
-openai.api_key = "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"
 
 # Abstractions are things like spaces and zones. They are not elements but are 
 # defined by elements. They are used to group elements together in ways that are meaningful 
@@ -86,7 +87,7 @@ class Boundary:
     relationships: List[Relationship] = field(default_factory=list)
 
     id: str = field(default_factory=lambda: str(uuid4()))
-    
+
     def __post_init__(self):
         # Calculate boundary properties based on type
         if self.type == 'full':
@@ -112,25 +113,25 @@ class Boundary:
         """
         if not self.geometry or not self.geometry.get_vertices():
             return [None] * len(target_points)
-        
+
         vertices = self.geometry.get_vertices()
         vertex_indexes = []
-        
+
         for target_point in target_points:
             target_array = np.array(target_point)
             best_index = None
             min_distance = float('inf')
-            
+
             for i, vertex in enumerate(vertices):
                 vertex_array = np.array(vertex)
                 distance = np.linalg.norm(vertex_array - target_array)
-                
+
                 if distance < tolerance and distance < min_distance:
                     min_distance = distance
                     best_index = i
-            
+
             vertex_indexes.append(best_index)
-        
+
         return vertex_indexes
 
     def _analyze_geometry_edges(self, tolerance: float = 0.01) -> Dict[str, Dict]:
@@ -145,42 +146,42 @@ class Boundary:
         """
         if not self.geometry or not self.geometry.get_vertices():
             return {}
-        
+
         vertices = list(self.geometry.get_vertices())
         if len(vertices) < 4:
             return {}
-        
+
         # Convert to numpy arrays for easier manipulation
         vertex_arrays = [np.array(v) for v in vertices]
-        
+
         # Find min and max Z coordinates to identify bottom and top edges
         z_coords = [v[2] for v in vertices]
         min_z = min(z_coords)
         max_z = max(z_coords)
-        
+
         # Separate vertices into bottom and top groups
         bottom_vertices = []
         top_vertices = []
-        
+
         for i, vertex in enumerate(vertices):
             if abs(vertex[2] - min_z) <= tolerance:
                 bottom_vertices.append((i, vertex))
             elif abs(vertex[2] - max_z) <= tolerance:
                 top_vertices.append((i, vertex))
-        
+
         if len(bottom_vertices) < 2 or len(top_vertices) < 2:
             return {}
-        
+
         # Sort bottom vertices by X coordinate, then by Y if X is equal
         bottom_vertices.sort(key=lambda x: (x[1][0], x[1][1]))
         top_vertices.sort(key=lambda x: (x[1][0], x[1][1]))
-        
+
         # Identify corner vertices
         bottom_left = bottom_vertices[0]
         bottom_right = bottom_vertices[-1]
         top_left = top_vertices[0]
         top_right = top_vertices[-1]
-        
+
         return {
             'bottom': {
                 'start_point': bottom_left[1],
@@ -221,7 +222,7 @@ class Boundary:
         """
         edges = self._analyze_geometry_edges()
         return edges.get('top', {})
-    
+
     def get_bottom_edge(self) -> Dict:
         """
         Get the bottom edge of the boundary as a line segment with vertex indexes.
@@ -231,7 +232,7 @@ class Boundary:
         """
         edges = self._analyze_geometry_edges()
         return edges.get('bottom', {})
-    
+
     def get_left_edge(self) -> Dict:
         """
         Get the left edge of the boundary as a line segment with vertex indexes.
@@ -241,7 +242,7 @@ class Boundary:
         """
         edges = self._analyze_geometry_edges()
         return edges.get('left', {})
-    
+
     def get_right_edge(self) -> Dict:
         """
         Get the right edge of the boundary as a line segment with vertex indexes.
@@ -274,12 +275,12 @@ class Boundary:
         """
         if not self.geometry or vertex_index is None:
             return False
-        
+
         try:
             vertices = list(self.geometry.get_vertices())
             if 0 <= vertex_index < len(vertices):
                 vertices[vertex_index] = new_coordinates
-                
+
                 # Update the geometry
                 faces = self.geometry.get_faces()
                 self.geometry.mesh_data = {
@@ -290,7 +291,7 @@ class Boundary:
                 return True
         except Exception as e:
             print(f"Error updating vertex {vertex_index}: {e}")
-        
+
         return False
 
     def extend_edge_to_point(self, edge_type: str, target_point: Tuple[float, float, float]) -> bool:
@@ -306,29 +307,29 @@ class Boundary:
         """
         # Get the edge with vertex indexes from geometry analysis
         edges = self._analyze_geometry_edges()
-        
+
         if edge_type not in edges:
             return False
-        
+
         edge = edges[edge_type]
-        
+
         # Update vertices to extend toward target point
         success = True
-        
+
         if edge.get('start_vertex_index') is not None:
             # Calculate new position for start vertex
             target_array = np.array(target_point)
             new_start = tuple(target_array)
-            
+
             success &= self.update_vertex_by_index(edge['start_vertex_index'], new_start)
-        
+
         if edge.get('end_vertex_index') is not None:
             # Calculate new position for end vertex
             target_array = np.array(target_point)
             new_end = tuple(target_array)
-            
+
             success &= self.update_vertex_by_index(edge['end_vertex_index'], new_end)
-        
+
         return success
 
     def get_geometry_bounds(self) -> Dict[str, Tuple[float, float, float]]:
@@ -340,16 +341,16 @@ class Boundary:
         """
         if not self.geometry or not self.geometry.get_vertices():
             return {}
-        
+
         vertices = list(self.geometry.get_vertices())
         if not vertices:
             return {}
-        
+
         # Find min and max for each coordinate
         x_coords = [v[0] for v in vertices]
         y_coords = [v[1] for v in vertices]
         z_coords = [v[2] for v in vertices]
-        
+
         return {
             'min_point': (min(x_coords), min(y_coords), min(z_coords)),
             'max_point': (max(x_coords), max(y_coords), max(z_coords)),
@@ -357,7 +358,7 @@ class Boundary:
                           max(y_coords) - min(y_coords), 
                           max(z_coords) - min(z_coords))
         }
-    
+
     def get_start_point_bottom(self) -> Tuple[float, float, float]:
         """
         Get the start point of the bottom edge from the geometry
@@ -367,7 +368,7 @@ class Boundary:
         """
         bottom_edge = self.get_bottom_edge()
         return bottom_edge.get('start_point', (0.0, 0.0, 0.0))
-    
+
     def get_end_point_bottom(self) -> Tuple[float, float, float]:
         """
         Get the end point of the bottom edge from the geometry
@@ -377,8 +378,8 @@ class Boundary:
         """
         bottom_edge = self.get_bottom_edge()
         return bottom_edge.get('end_point', (0.0, 0.0, 0.0))
-       
-    
+
+
 @dataclass
 class Space:
     """
@@ -406,7 +407,7 @@ class Space:
         """
         if not self.geometry or not self.geometry.get_vertices():
             return (0.0, 0.0, 0.0)
-        
+
         vertices = np.array(self.geometry.get_vertices())
         return tuple(np.mean(vertices, axis=0))
 
@@ -587,7 +588,7 @@ class Graph(ABC):
                 row = result.get_next()
                 schema.append((str(row[0]), str(row[1]), str(row[2])))
         return schema
-    
+
     def get_connection_schema_string(self) -> str:
         """
         Returns a string listing all connection types in the format:
@@ -597,7 +598,7 @@ class Graph(ABC):
         if not schema:
             return "No connections found."
         return "\n".join(f"{src} --[{rel}]--> {tgt}" for src, rel, tgt in schema)
-        
+
 
 class BuildingGraph(Graph):
     """
@@ -686,7 +687,7 @@ class Model:
         model.infer_bounds()
         model.infer_spaces()
         model.generate_adjacency_graph()
-        
+
 
         return model
 
@@ -722,14 +723,14 @@ class Model:
 
         """
         print(f"Starting boundary healing process with {len(self.boundaries)} boundaries...")
-        
+
         if dimentions == '2d':
             healed_pairs = set()  # Track which boundary pairs have been healed
-            
+
             for boundary_id, boundary in self.boundaries.items():
                 if not hasattr(boundary, 'geometry') or not boundary.geometry:
                     continue
-                    
+
                 # find the boundaries that refer the the adjacent items to the base_item of the boundary
                 base_item_relationships = self.relationships[boundary.base_item.id]
                 adjacent_boundaries = []
@@ -747,15 +748,15 @@ class Model:
                         except KeyError:
                             # If no boundary exists for this target item, we can skip it
                             continue
-                        
+
                 for adj_boundary in adjacent_boundaries:
                     pair_key = tuple(sorted([boundary_id, adj_boundary.id]))
                     if pair_key in healed_pairs:
                         continue  # Already healed this pair
-                    
+
                     # Check current intersection status
                     intersects = boundary.geometry.bbox_intersects(adj_boundary.geometry)
-                    
+
                     if intersects:
                         print(f"Boundaries {boundary_id} and {adj_boundary.id} already intersect")
                         healed_pairs.add(pair_key)
@@ -815,7 +816,7 @@ class Model:
                         x, y, z = vertex
                         new_vertex = [x, y, z]
                         original_vertex = new_vertex.copy()
-                        
+
                         # Extend in X direction if intersection is outside current bounds
                         if intersection_x > max_x and abs(x - max_x) < tolerance:
                             new_vertex[0] = intersection_x  # Extend max-X face
@@ -825,7 +826,7 @@ class Model:
                             new_vertex[0] = intersection_x  # Extend min-X face  
                             vertices_modified = True
                             print(f"Extended vertex {i} in -X direction: {vertex} -> {tuple(new_vertex)}")
-                            
+
                         # Extend in Y direction if intersection is outside current bounds
                         if intersection_y > max_y and abs(y - max_y) < tolerance:
                             new_vertex[1] = intersection_y  # Extend max-Y face
@@ -835,7 +836,7 @@ class Model:
                             new_vertex[1] = intersection_y  # Extend min-Y face
                             vertices_modified = True
                             print(f"Extended vertex {i} in -Y direction: {vertex} -> {tuple(new_vertex)}")
-                        
+
                         vertices_list[i] = tuple(new_vertex)
 
                     if vertices_modified:
@@ -864,7 +865,7 @@ class Model:
                     for i, vertex in enumerate(adj_vertices_list):
                         x, y, z = vertex
                         new_vertex = [x, y, z]
-                        
+
                         if intersection_x > adj_max_x and abs(x - adj_max_x) < tolerance:
                             new_vertex[0] = intersection_x
                             adj_vertices_modified = True
@@ -873,7 +874,7 @@ class Model:
                             new_vertex[0] = intersection_x
                             adj_vertices_modified = True
                             print(f"Extended adjacent vertex {i} in -X direction: {vertex} -> {tuple(new_vertex)}")
-                            
+
                         if intersection_y > adj_max_y and abs(y - adj_max_y) < tolerance:
                             new_vertex[1] = intersection_y
                             adj_vertices_modified = True
@@ -882,7 +883,7 @@ class Model:
                             new_vertex[1] = intersection_y
                             adj_vertices_modified = True
                             print(f"Extended adjacent vertex {i} in -Y direction: {vertex} -> {tuple(new_vertex)}")
-                        
+
                         adj_vertices_list[i] = tuple(new_vertex)
 
                     if adj_vertices_modified:
@@ -954,11 +955,11 @@ class Model:
                 }
 
             healed_pairs = set()  # Track which boundary pairs have been healed
-            
+
             for boundary_id, boundary in self.boundaries.items():
                 if not hasattr(boundary, 'geometry') or not boundary.geometry:
                     continue
-                    
+
                 # find the boundaries that refer the the adjacent items to the base_item of the boundary
                 base_item_relationships = self.relationships[boundary.base_item.id]
                 adjacent_boundaries = []
@@ -976,24 +977,24 @@ class Model:
                         except KeyError:
                             # If no boundary exists for this target item, we can skip it
                             continue
-                        
+
                 for adj_boundary in adjacent_boundaries:
                     pair_key = tuple(sorted([boundary_id, adj_boundary.id]))
                     if pair_key in healed_pairs:
                         continue  # Already healed this pair
-                    
+
                     # Check current intersection status
                     intersects = boundary.geometry.bbox_intersects(adj_boundary.geometry)
-                    
+
                     if intersects:
                         print(f"Boundaries {boundary_id} and {adj_boundary.id} already intersect")
                         healed_pairs.add(pair_key)
-                        
+
                         # Split boundary @ the intersection line between the two boundaries
                         boundary_plane = plane_from_triangle(boundary.geometry.get_vertices()[0:3])
                         adj_boundary_plane = plane_from_triangle(adj_boundary.geometry.get_vertices()[0:3])
                         intersection = intersect_planes(boundary_plane, adj_boundary_plane)
-                        
+
                         if intersection is None:
                             continue  # skip if planes are parallel or degenerate
 
@@ -1039,7 +1040,7 @@ class Model:
                         boundary.geometry.mesh_data['vertices'] = largest_verts_3d
                         boundary.geometry.mesh_data['faces'] = faces
                         boundary.geometry._generate_brep_from_mesh()
-                        
+
                         # Add healed pair to set
                         self.boundaries[boundary.id] = boundary
                         self.boundaries[adj_boundary.id] = adj_boundary
@@ -1051,7 +1052,7 @@ class Model:
                     boundary_plane = plane_from_triangle(boundary.geometry.get_vertices()[0:3])
                     adj_boundary_plane = plane_from_triangle(adj_boundary.geometry.get_vertices()[0:3])
                     intersection_point = intersect_planes(boundary_plane, adj_boundary_plane)['point']
-                    
+
                     # NEW APPROACH: Extend boundary face toward intersection, not edge collapse
                     intersection_x, intersection_y, intersection_z = intersection_point
 
@@ -1074,7 +1075,7 @@ class Model:
                         x, y, z = vertex
                         new_vertex = [x, y, z]
                         original_vertex = new_vertex.copy()
-                        
+
                         # Extend in X direction if intersection is outside current bounds
                         if intersection_x > max_x and abs(x - max_x) < tolerance:
                             new_vertex[0] = intersection_x  # Extend max-X face
@@ -1084,7 +1085,7 @@ class Model:
                             new_vertex[0] = intersection_x  # Extend min-X face  
                             vertices_modified = True
                             print(f"Extended vertex {i} in -X direction: {vertex} -> {tuple(new_vertex)}")
-                            
+
                         # Extend in Y direction if intersection is outside current bounds
                         if intersection_y > max_y and abs(y - max_y) < tolerance:
                             new_vertex[1] = intersection_y  # Extend max-Y face
@@ -1104,7 +1105,7 @@ class Model:
                             new_vertex[2] = intersection_z
                             vertices_modified = True
                             print(f"Extended vertex {i} in -Z direction: {vertex} -> {tuple(new_vertex)}")
-                        
+
                         vertices_list[i] = tuple(new_vertex)
 
                     if vertices_modified:
@@ -1133,7 +1134,7 @@ class Model:
                     for i, vertex in enumerate(adj_vertices_list):
                         x, y, z = vertex
                         new_vertex = [x, y, z]
-                        
+
                         if intersection_x > adj_max_x and abs(x - adj_max_x) < tolerance:
                             new_vertex[0] = intersection_x
                             adj_vertices_modified = True
@@ -1142,7 +1143,7 @@ class Model:
                             new_vertex[0] = intersection_x
                             adj_vertices_modified = True
                             print(f"Extended adjacent vertex {i} in -X direction: {vertex} -> {tuple(new_vertex)}")
-                            
+
                         if intersection_y > adj_max_y and abs(y - adj_max_y) < tolerance:
                             new_vertex[1] = intersection_y
                             adj_vertices_modified = True
@@ -1161,7 +1162,7 @@ class Model:
                             new_vertex[2] = intersection_z
                             adj_vertices_modified = True
                             print(f"Extended adjacent vertex {i} in -Z direction: {vertex} -> {tuple(new_vertex)}")
-                        
+
                         adj_vertices_list[i] = tuple(new_vertex)
 
                     if adj_vertices_modified:
@@ -1180,10 +1181,10 @@ class Model:
                     # Add healed pair to set
                     self.boundaries[boundary.id] = boundary
                     self.boundaries[adj_boundary.id] = adj_boundary
-            
-            
 
-                        
+
+
+
 
     def infer_bounds(self, dimentions: str = "3d"):
         """
@@ -1257,7 +1258,7 @@ class Model:
                                              centroid_x=wall.get_centroid().x,
                                              centroid_y=wall.get_centroid().y,
                                              centroid_z=wall.get_centroid().z)
-                
+
                 features = {
                     'boundary_id': boundary.id,
                     'type': boundary.type,
@@ -1274,10 +1275,10 @@ class Model:
                 boundary.relationships.append(rel)
                 self.relationships[boundary.id].append(rel)
                 self.building_graph.add_edge(wall.id, boundary.id, "OBJECT_CREATES_BOUNDARY", from_label='Object', to_label='Boundary')
-                
+
                 # add boundary_id to the walls boundary_id attribute
                 wall.boundary_id = boundary.id
-            
+
             elif wall_height_ratio < 0.7:
                 boundary = Boundary(
                     id=generate_id('boundary'),
@@ -1303,7 +1304,7 @@ class Model:
                                              centroid_x=wall.get_centroid().x,
                                              centroid_y=wall.get_centroid().y,
                                              centroid_z=wall.get_centroid().z)
-                
+
                 # add boundary_id to the walls boundary_id attribute
                 wall.boundary_id = boundary.id
 
@@ -1350,8 +1351,8 @@ class Model:
                                             centroid_x=wall.get_centroid().x,
                                             centroid_y=wall.get_centroid().y,
                                             centroid_z=wall.get_centroid().z)
-            
-                
+
+
                 # add boundary_id to the walls boundary_id attribute
                 wall.boundary_id = boundary.id
 
@@ -1423,7 +1424,7 @@ class Model:
                 # Don't process decks
                 pass
 
-                
+
         # Now lets heal the boundaries by finding intersections and extending them
         self.heal_boundaries(dimentions=dimentions)
 
@@ -1438,7 +1439,7 @@ class Model:
                     # Create adjacency relationship
                     rel = AdjacentTo(boundary_id, other_boundary_id)
                     boundary.relationships.append(rel)
-                    
+
                     self.relationships[boundary_id].append(rel)
                     self.boundary_graph.add_edge(boundary_id, other_boundary_id, relationship=rel.type)
 
@@ -1448,10 +1449,10 @@ class Model:
 
                     # Add to the building graph
                     self.building_graph.add_edge(boundary_id, other_boundary_id, 'BOUNDARY_ADJACENT_TO', from_label='Boundary', to_label='Boundary')
-                    
+
         print(f"Boundaries inferred: {len(self.boundaries)}")
-                
-        
+
+
 
     def infer_spaces(self, dimentions: str = "3d") -> List[Space]:
         """
@@ -1462,8 +1463,8 @@ class Model:
         """
         space_counter = 0
         if dimentions == '2d':
-    
-           
+
+
 
             # Function to cut a line at given points
             from shapely.geometry import Polygon, LineString, Point
@@ -1500,7 +1501,7 @@ class Model:
                         lines.append(LineString(coords[i:j+1]))            
 
                 return lines
-            
+
 
             # # Step 1: Find and normalize unique cycles
             # all_cycles = list(nx.simple_cycles(self.boundary_graph))
@@ -1508,7 +1509,7 @@ class Model:
 
             # find basis_cycles in the boundary graph
             unique_cycles = list(nx.cycle_basis(self.boundary_graph))
-            
+
             print(f"Found {len(unique_cycles)} cycles in the boundary graph.")
             for cycle in unique_cycles:
                 # determine if the cycle is a valid space by checking if the normal vectors of the boundaries are consistent
@@ -1549,7 +1550,7 @@ class Model:
 
                 if face:
 
-          
+
                     cell = Cell.ByThickenedFace(face, thickness=max([boundary.height for boundary in cycle_boundaries]))
                     # Create geometry from the cell
                     geometry = Geometry.from_topology(cell)
@@ -1560,7 +1561,7 @@ class Model:
                         boundaries=cycle_boundaries,
                         area=Face.Area(face) # Assuming area as a proxy for area in 2D
                     )
-                    
+
                     self.spaces[space_id] = space
                     space_counter += 1
 
@@ -1597,7 +1598,7 @@ class Model:
                                 elif isinstance(intersection, LineString):
                                     # If intersection is a line, take its endpoints
                                     continue
-                                
+
                             else:
                                 continue # No intersection, keep original edge
                     # get edges as a list
@@ -1607,12 +1608,12 @@ class Model:
                         s_v = Vertex.ByCoordinates(x=edge.coords[0][0], y=edge.coords[0][1], z=edge.coords[0][2])
                         e_v = Vertex.ByCoordinates(x=edge.coords[1][0], y=edge.coords[1][1], z=edge.coords[1][2])
                         topologic_edges.append(Edge.ByStartVertexEndVertex(s_v, e_v))
-                    
+
                     face = Face.ByEdges(topologic_edges, tolerance=0.01)
                     if face:
                         space_height = max([boundary.height for boundary in cycle_boundaries])
                         cell = Cell.ByThickenedFace(face, thickness=space_height)
-                        
+
                         # Create geometry from the cell
                         geometry = Geometry.from_topology(cell)
                         space = Space(
@@ -1622,7 +1623,7 @@ class Model:
                             geometry=geometry,  # Assuming area as a proxy for area in 2D
                             topology=cell
                         )
-                        
+
                         self.spaces[space_id] = space
                         space_counter += 1
 
@@ -1633,7 +1634,7 @@ class Model:
                             'volume': space.geometry.compute_volume(),
                         }
                         self.building_graph.add_node('Space', node_id=space.id, features=features)
-                
+
         elif dimentions == '3d':
             from itertools import combinations
             def process_face_combo(combo):
@@ -1656,7 +1657,7 @@ class Model:
             # TODO idea: How about we create topologic face objects from every boundary geometry and then we try all combinations of 4+ 
             # and find those that create a closed volume?
 
-            
+
             topologic_faces = []
             for boundary in self.boundaries.values():
                 if not hasattr(boundary, 'geometry') or not boundary.geometry:
@@ -1668,7 +1669,7 @@ class Model:
                     topologic_faces.append(topologic_face)
 
             # find all combinations of 4+ faces that form a closed volume
-            
+
             # Step 1: Find all combinations of 4+ faces
             all_combinations = []
             for r in range(5, 15):
@@ -1691,7 +1692,7 @@ class Model:
                 if magnitude > 2:
                     print(f"Combination {combo} does not form a closed volume, skipping...")
                     continue
-                    
+
 
                 cell = Cell.ByFaces(list(combo), tolerance=0.01)
 
@@ -1699,7 +1700,7 @@ class Model:
                     # Create geometry from the cell
                     geometry = Geometry.from_topology(cell)
 
-                    
+
                     # check if the geometry is the same as an existing space geometry
                     existing_space_overlaps = [
                         space for space in self.spaces.values() if space.geometry.bbox_intersects(geometry, return_overlap_percent=True) > 0.3
@@ -1721,7 +1722,7 @@ class Model:
                         boundaries=[b for b in self.boundaries.values() if b.geometry in combo],
                         volume=Geometry.compute_volume(geometry)  # Assuming volume as a proxy for area in 3D
                     )
-                    
+
                     self.spaces[space_id] = space
                     space_counter += 1
 
@@ -1749,14 +1750,14 @@ class Model:
             return
 
         space_complex = CellComplex.ByCells(space_topologies, tolerance=0.01, transferDictionaries=True)
-        
+
         # Create a graph from the space complex
         space_graph = Graph.ByTopology(space_complex, tolerance=0.01)
 
         space_graph_nx = Graph.NetworkXGraph(space_graph)
 
         self.space_adjacency_graph = space_graph_nx
-        
+
 
     def show_boundaries(self):
         """
@@ -1764,9 +1765,9 @@ class Model:
         """
         import plotly.graph_objects as go
         import numpy as np
-        
+
         fig = go.Figure()
-        
+
         colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray']
         color_idx = 0
 
@@ -1774,10 +1775,10 @@ class Model:
             # Extract geometry data
             vertices = boundary.geometry.get_vertices()
             faces = boundary.geometry.get_faces()
-            
+
             if not vertices or not faces:
                 continue
-            
+
             x, y, z = zip(*vertices)
             i, j, k = zip(*faces)
 
@@ -1845,7 +1846,7 @@ class Model:
         items = []
         if item_types is None:
             item_types = ['objects', 'components', 'elements']
-        
+
         if 'objects' in item_types:
             items.extend(self.objects.values())
         if 'components' in item_types:
@@ -1898,10 +1899,10 @@ class Model:
                     # Check if item has geometry and brep_data
                     if not hasattr(item, 'geometry') or not hasattr(item.geometry, 'brep_data'):
                         continue
-                        
+
                     brep = item.geometry.brep_data
                     surfaces = brep.get("surfaces", [])
-                    
+
                     for surf in surfaces:
                         vs = surf.get("vertices", [])
                         offset = len(vertices)
@@ -1945,38 +1946,38 @@ class Model:
             centroid_x = nx.get_node_attributes(self.building_graph, 'centroid_x')
             centroid_y = nx.get_node_attributes(self.building_graph, 'centroid_y')
             centroid_z = nx.get_node_attributes(self.building_graph, 'centroid_z')
-            
+
             all_nodes = list(self.building_graph.nodes)
-            
+
             # Check if centroid data is available
             has_centroids = all(node in centroid_x and node in centroid_y and node in centroid_z 
                             for node in all_nodes)
-            
+
             if has_centroids:
                 # Extract the node attribute values for coloring
                 node_attrs = nx.get_node_attributes(self.building_graph, graph_color_by)
-                
+
                 # Create color mapping for graph nodes
                 unique_values = list(set(node_attrs.values()))
                 graph_node_colors = {val: random_color(seed=hash(str(val)) % 100) 
                                 for val in unique_values}
-                
+
                 # Group nodes by attribute value for separate traces
                 node_groups = defaultdict(list)
                 for node in all_nodes:
                     attr_value = node_attrs.get(node, "unknown")
                     node_groups[attr_value].append(node)
-                
+
                 # Plot nodes grouped by attribute
                 for attr_value, nodes in node_groups.items():
                     if not nodes:
                         continue
-                        
+
                     x_coords = [centroid_x[node] for node in nodes]
                     y_coords = [centroid_y[node] for node in nodes]
                     z_coords = [centroid_z[node] for node in nodes]
                     node_labels = [str(node) for node in nodes]
-                    
+
                     fig.add_trace(go.Scatter3d(
                         x=x_coords,
                         y=y_coords,
@@ -1994,11 +1995,11 @@ class Model:
                         hovertemplate=f"Node: %{{text}}<br>{graph_color_by}: {attr_value}<br>x: %{{x}}<br>y: %{{y}}<br>z: %{{z}}<extra></extra>",
                         showlegend=True
                     ))
-                
+
                 # Plot edges
                 edge_x, edge_y, edge_z = [], [], []
                 edge_labels = nx.get_edge_attributes(self.building_graph, 'relationship')
-                
+
                 for edge in self.building_graph.edges():
                     node1, node2 = edge
                     if node1 in centroid_x and node2 in centroid_x:
@@ -2006,7 +2007,7 @@ class Model:
                         edge_x.extend([centroid_x[node1], centroid_x[node2], None])
                         edge_y.extend([centroid_y[node1], centroid_y[node2], None])
                         edge_z.extend([centroid_z[node1], centroid_z[node2], None])
-                
+
                 # Add edges as a single trace
                 if edge_x:
                     fig.add_trace(go.Scatter3d(
@@ -2019,7 +2020,7 @@ class Model:
                         hoverinfo='skip',
                         showlegend=True
                     ))
-                
+
                 # Add edge labels if they exist
                 if edge_labels:
                     edge_label_x, edge_label_y, edge_label_z, edge_label_text = [], [], [], []
@@ -2030,12 +2031,12 @@ class Model:
                             mid_x = (centroid_x[node1] + centroid_x[node2]) / 2
                             mid_y = (centroid_y[node1] + centroid_y[node2]) / 2
                             mid_z = (centroid_z[node1] + centroid_z[node2]) / 2
-                            
+
                             edge_label_x.append(mid_x)
                             edge_label_y.append(mid_y)
                             edge_label_z.append(mid_z)
                             edge_label_text.append(str(label))
-                    
+
                     if edge_label_text:
                         fig.add_trace(go.Scatter3d(
                             x=edge_label_x,
@@ -2050,7 +2051,7 @@ class Model:
                         ))
             else:
                 print("Warning: Building graph nodes don't have centroid coordinates. Skipping graph visualization.")
-        
+
         elif show_building_graph:
             print("Warning: No building graph found in model or building_graph parameter is False.")
 
@@ -2060,7 +2061,7 @@ class Model:
             title_parts.append("B-rep Model Objects")
         if show_building_graph and hasattr(self, 'building_graph'):
             title_parts.append("Building Graph")
-        
+
         title = " and ".join(title_parts) if title_parts else "Model Visualization"
 
         fig.update_layout(
@@ -2139,7 +2140,7 @@ class Model:
                         scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Z'),
                         margin=dict(l=0, r=0, b=0, t=40))
 
-                        
+
         fig.show()
 
     def show_spaces_graph(self):
@@ -2265,24 +2266,24 @@ class Model:
     def show_all_as_elements(self, **kwargs):
         """Convenience method to show all items flattened to elements."""
         return self.show(flatten_to_elements=True, **kwargs)
-    
+
     def show_spaces(self):
         """
         Display the inferred spaces in the model using Plotly.
         Each space is represented as a 3D mesh with its boundaries.
         """
         import plotly.graph_objects as go
-        
+
         fig = go.Figure()
 
         for space in self.spaces.values():
             # Extract geometry data
             vertices = space.geometry.get_vertices()
             faces = space.geometry.get_faces()
-            
+
             if not vertices or not faces:
                 continue
-            
+
             x, y, z = zip(*vertices)
             i, j, k = zip(*faces)
 
@@ -2307,7 +2308,7 @@ class Model:
             ),
             showlegend=True
         )
-        
+
         fig.show()
 
     def get_bounding_box(self):
@@ -2318,7 +2319,7 @@ class Model:
         """
         if not self.objects and not self.components and not self.elements:
             return None
-        
+
         all_geometries = []
         for item in self.objects.values():
             if hasattr(item, 'geometry'):
@@ -2341,7 +2342,7 @@ class Model:
         min_x, min_y, min_z = np.min(all_vertices, axis=0)
         max_x, max_y, max_z = np.max(all_vertices, axis=0)
         return (min_x, min_y, min_z, max_x, max_y, max_z)
-    
+
     def ask(self, question: str, **kwargs) -> str:
         """
         Ask a question about the model by using LLM to generate and run a Cypher query on the building graph.
@@ -2359,7 +2360,9 @@ class Model:
         Returns:
             str: The answer generated from the graph query result.
         """
-        import openai
+        from openai import OpenAI
+        
+        client = OpenAI(api_key="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")
 
         # Step 1: Get schema context
         node_types = self.building_graph.get_node_types_to_string()
@@ -2379,20 +2382,18 @@ class Model:
     """
 
         # Step 3: Get Cypher query from OpenAI
-        response = openai.ChatCompletion.create(
-            model=kwargs.get("model", "gpt-4"),
-            messages=[
-                {"role": "system", "content": system_prompt.strip()},
-                {"role": "user", "content": f"User question: {question}"}
-            ],
-            temperature=kwargs.get("temperature", 0),
-            max_tokens=200
-        )
-        cypher_query = response['choices'][0]['message']['content'].strip()
+        response = client.chat.completions.create(model=kwargs.get("model", "gpt-4"),
+        messages=[
+            {"role": "system", "content": system_prompt.strip()},
+            {"role": "user", "content": f"User question: {question}"}
+        ],
+        temperature=kwargs.get("temperature", 0),
+        max_tokens=200)
+        cypher_query = response.choices[0].message.content.strip()
 
         # Step 4: Execute query on graph
         try:
-            result = self.buliding_graph.query(cypher_query)
+            result = self.building_graph.query_to_string(cypher_query)
         except Exception as e:
             return f"Error running query: {e}\nQuery:\n{cypher_query}"
 
@@ -2416,17 +2417,14 @@ class Model:
     "{question}"
     """
 
-        answer_response = openai.ChatCompletion.create(
-            model=kwargs.get("model", "gpt-4"),
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that summarizes database query results into natural language."},
-                {"role": "user", "content": interpret_prompt.strip()}
-            ],
-            temperature=kwargs.get("temperature", 0.2),
-            max_tokens=300
-        )
+        answer_response = client.chat.completions.create(model=kwargs.get("model", "gpt-4"),
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant that summarizes database query results into natural language."},
+            {"role": "user", "content": interpret_prompt.strip()}
+        ],
+        temperature=kwargs.get("temperature", 0.2),
+        max_tokens=300)
 
-        final_answer = answer_response['choices'][0]['message']['content'].strip()
+        final_answer = answer_response.choices[0].message.content.strip()
 
-        return f"Query:\n{cypher_query}\n\nResult:\n{result_str}\n\nAnswer:\n{final_answer}"
-        
+        return f"Answer: {final_answer}"
