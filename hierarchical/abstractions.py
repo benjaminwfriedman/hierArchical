@@ -1,5 +1,5 @@
 from hierarchical.items import Element, Component, Wall, Deck, Window, Door, Object, BaseItem
-from hierarchical.relationships import AdjacentTo, Relationship
+from hierarchical.relationships import AdjacentTo, Relationship, Creates
 from hierarchical.geometry import Geometry
 from collections import defaultdict
 import networkx as nx
@@ -16,8 +16,13 @@ from topologicpy.Cell import Cell
 from topologicpy.Topology import Topology
 from topologicpy.Dictionary import Dictionary
 import plotly.graph_objects as go
+import kuzu
+import uuid
+from uuid import uuid4
+import openai
 
 
+openai.api_key = "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"
 
 # Abstractions are things like spaces and zones. They are not elements but are 
 # defined by elements. They are used to group elements together in ways that are meaningful 
@@ -69,7 +74,7 @@ def triangulate_polygon_3d(vertices_3d, normal=None):
 @dataclass
 class Boundary:
     """Represents a space boundary with its properties and geometry."""
-    id: str
+    name: str
     type: str  # 'full', 'partial', 'open'
     geometry: 'Geometry'
     is_access_boundary: bool
@@ -79,6 +84,8 @@ class Boundary:
     normal_vector: Tuple[float, float, float]
     adjacent_spaces: List[str]  # IDs of spaces this boundary separates
     relationships: List[Relationship] = field(default_factory=list)
+
+    id: str = field(default_factory=lambda: str(uuid4()))
     
     def __post_init__(self):
         # Calculate boundary properties based on type
@@ -377,14 +384,18 @@ class Space:
     """
     Represents a space in the building model, defined by its boundaries and properties.
     """
-    id: str
+
+    # A human-readable name for the item
     name: str
+
     geometry: Geometry
     boundaries: List[Boundary] = field(default_factory=list)
     volume: float = 0.0
     area: float = 0.0
     relationships: Dict[str, List[Relationship]] = field(default_factory=lambda: defaultdict(list))
     topology: Optional[Cell] = None  # Topologic cell representing the space
+    # A unique UUID
+    id: str = field(default_factory=lambda: str(uuid4()))
 
     def centoid(self) -> Tuple[float, float, float]:
         """
@@ -398,7 +409,219 @@ class Space:
         
         vertices = np.array(self.geometry.get_vertices())
         return tuple(np.mean(vertices, axis=0))
-       
+
+from abc import ABC, abstractmethod
+class Graph(ABC):
+    """
+    Abstract base class representing a graph structure using KuzuDB.
+    Subclasses should implement create_graph to define schema and initial data.
+    """
+    def __init__(self, db_path: str = "./demo_db"):
+        self.db = kuzu.Database(db_path)
+        self.conn = kuzu.Connection(self.db)
+        self._initialize_graph()
+
+    def _initialize_graph(self):
+        """
+        Internal method to call create_graph once during initialization.
+        """
+        self.create_graph()
+
+    @abstractmethod
+    def create_graph(self):
+        """
+        Create the graph schema and structure in the database.
+        Must be implemented by subclasses.
+        """
+        raise NotImplementedError("Subclasses must implement create_graph method.")
+
+    def add_node(self, label: str, node_id: str = None, **attributes):
+        """
+        Add a node of a given label with attributes to the graph.
+        """
+        node_id = node_id or str(uuid.uuid4())
+        all_attrs = {'id': node_id, **attributes}
+
+        flat_attrs = {}
+        for k, v in all_attrs.items():
+            if v is None:
+                continue
+            elif isinstance(v, np.generic):
+                flat_attrs[k] = v.item()
+            elif isinstance(v, dict):
+                for subk, subv in v.items():
+                    if subv is not None:
+                        if isinstance(subv, np.generic):
+                            subv = subv.item()
+                        flat_attrs[subk] = subv  # ✅ no prefix
+            else:
+                flat_attrs[k] = v
+
+        attr_str = ", ".join(f"{k}: {self._format_value(v)}" for k, v in flat_attrs.items())
+        query = f"CREATE (:{label} {{ {attr_str} }})"
+        self.conn.execute(query)
+        return node_id
+
+    def add_edge(self, from_id: str, to_id: str, rel_type: str, from_label: str = "Node", to_label: str = "Node", **attributes):
+        """
+        Add a relationship between two nodes by ID.
+        """
+        attr_str = ""
+        if attributes:
+            attr_str = "{" + ", ".join([f"{k}: {self._format_value(v)}" for k, v in attributes.items()]) + "}"
+
+        query = f"""
+        MATCH (a:{from_label} {{id: '{from_id}'}}), (b:{to_label} {{id: '{to_id}'}})
+        CREATE (a)-[:{rel_type} {attr_str}]->(b)
+        """
+        self.conn.execute(query)
+
+    def _format_value(self, val):
+        """
+        Format values for Cypher strings: handle numbers, strings, bools, etc.
+        """
+        if isinstance(val, str):
+            return f"'{val}'"
+        if isinstance(val, bool):
+            return "true" if val else "false"
+        return str(val)
+
+    def query_to_string(self, query: str) -> str:
+        """
+        Execute a raw Cypher query against the graph database and return the results as a string.
+        """
+        try:
+            result = self.conn.execute(query)
+        except Exception as e:
+            raise Exception(f"Query failed: {e}")
+
+        if result.has_next():
+            rows = []
+            while result.has_next():
+                row = result.get_next()
+                rows.append(str(row))
+            return "\n".join(rows)
+        else:
+            return "No results."
+
+    def query(self, query: str):
+        """
+        Execute a Cypher query and return the result set.
+        """
+        try:
+            return self.conn.execute(query)
+        except Exception as e:
+            raise Exception(f"Query failed: {e}")
+
+    def get_node_types(self) -> List[str]:
+        """
+        Get a list of all node labels (types) used in the graph.
+        """
+        query = """
+        MATCH (n)
+        RETURN DISTINCT labels(n)[0] AS node_type
+        """
+        result = self.query(query)
+        return [row['node_type'] for row in result.get_all()] if result else []
+
+    def get_node_types_to_string(self) -> str:
+        """
+        Get a string representation of all node types in the graph.
+        """
+        query = """
+        MATCH (n)
+        RETURN DISTINCT label(n)
+        """
+        result = self.query(query)
+        if result and result.has_next():
+            rows = []
+            while result.has_next():
+                row = result.get_next()
+                rows.append(str(row[0]))  # or `str(row)` if you want the full row object
+            return ", ".join(rows)
+        return "No node types found."
+
+    def get_relationship_types(self) -> List[str]:
+        """
+        Get a list of all relationship types used in the graph.
+        """
+        query = """
+        MATCH ()-[r]->()
+        RETURN DISTINCT type(r) AS rel_type
+        """
+        result = self.query(query)
+        return [row['rel_type'] for row in result.get_all()] if result else []
+
+    def get_relationship_types_to_string(self) -> str:
+        """
+        Get a string representation of all relationship types in the graph.
+        Assumes each relationship has a 'type' property.
+        """
+        query = """
+        MATCH ()-[r]->()
+        RETURN DISTINCT label(r) AS rel_type
+        """
+        result = self.query(query)
+        if result and result.has_next():
+            rows = []
+            while result.has_next():
+                row = result.get_next()
+                rows.append(str(row[0]))
+            return ", ".join(rows)
+        return "No relationship types found."
+
+    def get_connection_schema(self) -> List[Tuple[str, str, str]]:
+        """
+        Infers all distinct connection patterns from the graph in the form:
+        (source_label, relationship_type, target_label)
+        Assumes relationship type is stored as a property named 'type'.
+        """
+        query = """
+        MATCH (a)-[r]->(b)
+        RETURN DISTINCT label(a) AS source, label(r) AS rel_type, label(b) AS target
+        """
+        result = self.query(query)
+        schema = []
+        if result and result.has_next():
+            while result.has_next():
+                row = result.get_next()
+                schema.append((str(row[0]), str(row[1]), str(row[2])))
+        return schema
+    
+    def get_connection_schema_string(self) -> str:
+        """
+        Returns a string listing all connection types in the format:
+        'Source --[REL]--> Target'
+        """
+        schema = self.get_connection_schema()
+        if not schema:
+            return "No connections found."
+        return "\n".join(f"{src} --[{rel}]--> {tgt}" for src, rel, tgt in schema)
+        
+
+class BuildingGraph(Graph):
+    """
+    Represents the building graph structure in KuzuDB.
+    Contains nodes for objects and edges for relationships.
+    """
+    def create_graph(self):
+        """
+        Create the building graph schema in the database.
+        """
+        # create node tables
+        self.conn.execute("CREATE NODE TABLE IF NOT EXISTS Space(id STRING PRIMARY KEY, name STRING, volume FLOAT)")
+        # create node tables for other object types
+        self.conn.execute("CREATE NODE TABLE IF NOT EXISTS Object(id STRING PRIMARY KEY, type STRING, volume FLOAT, centroid_x FLOAT, centroid_y FLOAT, centroid_z FLOAT)")
+        self.conn.execute("CREATE NODE TABLE IF NOT EXISTS Element(id STRING PRIMARY KEY, type STRING, volume FLOAT, centroid_x FLOAT, centroid_y FLOAT, centroid_z FLOAT)")
+        self.conn.execute("CREATE NODE TABLE IF NOT EXISTS Component(id STRING PRIMARY KEY, type STRING, volume FLOAT, centroid_x FLOAT, centroid_y FLOAT, centroid_z FLOAT)")
+        self.conn.execute("CREATE NODE TABLE IF NOT EXISTS Boundary(id STRING PRIMARY KEY, boundary_id STRING, type STRING, is_access_boundary BOOL, is_visual_boundary BOOL, centroid_x FLOAT, centroid_y FLOAT, centroid_z FLOAT)")
+
+        # create relationship tables
+        self.conn.execute("CREATE REL TABLE IF NOT EXISTS OBJECT_ADJACENT_TO(FROM Object TO Object, type STRING)")
+        self.conn.execute("CREATE REL TABLE IF NOT EXISTS BOUNDARY_ADJACENT_TO(FROM Boundary TO Boundary, type STRING)")
+        self.conn.execute("CREATE REL TABLE IF NOT EXISTS OBJECT_CREATES_BOUNDARY(FROM Object TO Boundary, type STRING)")
+
+
 
 class Model:
     """
@@ -415,7 +638,7 @@ class Model:
         self.zones = {}
         self.relationships = defaultdict(list)
         self.boundaries = {}
-        self.building_graph = nx.DiGraph()
+        self.building_graph = BuildingGraph(db_path="./building_graph.db")  # Initialize the building graph
         # Boundary Graph - Might collapse with building_graph in future
         self.boundary_graph = nx.Graph()  
 
@@ -447,19 +670,19 @@ class Model:
             # Attempt to extract geometric features if they exist
             features = {
                 "type": type(obj).__name__,  # class name, e.g., Wall, Door, etc.
-                "length": getattr(obj, "length", None),
-                "width": getattr(obj, "width", None),
-                "height": getattr(obj, "height", None),
-                "volume": getattr(obj, "volume", None),
+                # "length": getattr(obj, "length", None),
+                # "width": getattr(obj, "width", None),
+                # "height": getattr(obj, "height", None),
+                "volume": obj.geometry.compute_volume() if obj.geometry else 0.0,
                 "centroid_x": obj.get_centroid().x,
                 "centroid_y": obj.get_centroid().y,
                 "centroid_z": obj.get_centroid().z,
-                "object": obj  # preserve full object for further use
+                # "object": obj  # preserve full object for further use
             }
 
-            model.building_graph.add_node(obj_id, **features)
+            model.building_graph.add_node("Object", node_id=obj.id, **features)
 
-        model.create_adjacency_relationships(tolerance=0.001)
+        model.create_object_adjacency_relationships(tolerance=0.001)
         model.infer_bounds()
         model.infer_spaces()
         model.generate_adjacency_graph()
@@ -467,7 +690,7 @@ class Model:
 
         return model
 
-    def create_adjacency_relationships(self, tolerance=0.01):
+    def create_object_adjacency_relationships(self, tolerance=0.01):
         """
         Add adjacency relationships between objects in the model to the building_graph.
         """
@@ -478,8 +701,7 @@ class Model:
                 self.relationships[obj.id].append(rel)
 
                 # Add edge to graph
-                self.building_graph.add_edge(obj.id, adjacent_item.id, relationship=rel.type)
-
+                self.building_graph.add_edge(obj.id, adjacent_item.id, "OBJECT_ADJACENT_TO", from_label="Object", to_label="Object")
 
     ### Bounds
     def heal_boundaries(self, dimentions: str = "3d", max_extension: float = 2.0, extension_step: float = 0.01, max_iterations: int = 200):
@@ -1012,7 +1234,7 @@ class Model:
             # if the wall height is greater than 90% of the span then its a full height wall
             if wall_height_ratio > 0.7:
                 boundary = Boundary(
-                    id=generate_id('boundary'),
+                    name=wall.name,
                     type='full',
                     geometry=wall.get_centerplane_geometry(),
                     is_access_boundary=True,
@@ -1035,6 +1257,23 @@ class Model:
                                              centroid_x=wall.get_centroid().x,
                                              centroid_y=wall.get_centroid().y,
                                              centroid_z=wall.get_centroid().z)
+                
+                features = {
+                    'boundary_id': boundary.id,
+                    'type': boundary.type,
+                    'is_access_boundary': boundary.is_access_boundary,
+                    'is_visual_boundary': boundary.is_visual_boundary,
+                    'centroid_x': wall.get_centroid().x,
+                    'centroid_y': wall.get_centroid().y,
+                    'centroid_z': wall.get_centroid().z
+                }
+
+                self.building_graph.add_node('Boundary', features=features)
+
+                rel = Creates(wall.id, boundary.id)
+                boundary.relationships.append(rel)
+                self.relationships[boundary.id].append(rel)
+                self.building_graph.add_edge(wall.id, boundary.id, "OBJECT_CREATES_BOUNDARY", from_label='Object', to_label='Boundary')
                 
                 # add boundary_id to the walls boundary_id attribute
                 wall.boundary_id = boundary.id
@@ -1068,7 +1307,23 @@ class Model:
                 # add boundary_id to the walls boundary_id attribute
                 wall.boundary_id = boundary.id
 
-                                             
+                features = {
+                    'boundary_id': boundary.id,
+                    'type': boundary.type,
+                    'is_access_boundary': boundary.is_access_boundary,
+                    'is_visual_boundary': boundary.is_visual_boundary,
+                    'centroid_x': wall.get_centroid().x,
+                    'centroid_y': wall.get_centroid().y,
+                    'centroid_z': wall.get_centroid().z
+                }
+
+                self.building_graph.add_node('Boundary', node_id=boundary.id, features=features)
+
+                # add relatinoship between the wall and the boundary
+                rel = Creates(wall.id, boundary.id)
+                boundary.relationships.append(rel)
+                self.relationships[boundary.id].append(rel)
+                self.building_graph.add_edge(wall.id, boundary.id, "OBJECT_CREATES_BOUNDARY", from_label='Object', to_label='Boundary')                                             
 
             else:
                 boundary = Boundary(
@@ -1095,16 +1350,35 @@ class Model:
                                             centroid_x=wall.get_centroid().x,
                                             centroid_y=wall.get_centroid().y,
                                             centroid_z=wall.get_centroid().z)
+            
                 
                 # add boundary_id to the walls boundary_id attribute
                 wall.boundary_id = boundary.id
+
+                features = {
+                    'boundary_id': boundary.id,
+                    'type': boundary.type,
+                    'is_access_boundary': boundary.is_access_boundary,
+                    'is_visual_boundary': boundary.is_visual_boundary,
+                    'centroid_x': wall.get_centroid().x,
+                    'centroid_y': wall.get_centroid().y,
+                    'centroid_z': wall.get_centroid().z
+                }
+
+                self.building_graph.add_node('Boundary', node_id=boundary.id, features=features)
+
+                rel = Creates(wall.id, boundary.id)
+                boundary.relationships.append(rel)
+                self.relationships[boundary.id].append(rel)
+                self.building_graph.add_edge(wall.id, boundary.id, "OBJECT_CREATES_BOUNDARY", from_label='Object', to_label='Boundary')
+
         if dimentions == '3d':
             for deck in decks_connected_to_walls.values():
                 # get the deck center plane geometry
                 deck_geometry = deck.get_centerplane_geometry()
                 # create a boundary for the deck
                 boundary = Boundary(
-                    id=generate_id('boundary'),
+                    name=deck.name,
                     type='deck',
                     geometry=deck_geometry,
                     is_access_boundary=True,
@@ -1128,7 +1402,24 @@ class Model:
                                                 centroid_z=deck.get_centroid().z)
                 # add boundary_id to the decks boundary_id attribute
                 deck.boundary_id = boundary.id
-            else:
+
+                features = {
+                    'boundary_id': boundary.id,
+                    'type': boundary.type,
+                    'is_access_boundary': boundary.is_access_boundary,
+                    'is_visual_boundary': boundary.is_visual_boundary,
+                    'centroid_x': wall.get_centroid().x,
+                    'centroid_y': wall.get_centroid().y,
+                    'centroid_z': wall.get_centroid().z
+                }
+
+                self.building_graph.add_node('Boundary', node_id=boundary.id, features=features)
+
+                # add relatinoship between the deck and the boundary
+                rel = Creates(deck.id, wall.id)
+                boundary.relationships.append(rel)
+                self.relationships[boundary.id].append(rel)
+                self.building_graph.add_edge(deck.id, boundary.id, "OBJECT_CREATES_BOUNDARY", from_label='Object', to_label='Boundary')
                 # Don't process decks
                 pass
 
@@ -1154,6 +1445,9 @@ class Model:
                     # Add the other boundary to the adjacent spaces list
                     boundary.adjacent_spaces.append(other_boundary_id)
                     other_boundary.adjacent_spaces.append(boundary_id)
+
+                    # Add to the building graph
+                    self.building_graph.add_edge(boundary_id, other_boundary_id, 'BOUNDARY_ADJACENT_TO', from_label='Boundary', to_label='Boundary')
                     
         print(f"Boundaries inferred: {len(self.boundaries)}")
                 
@@ -1166,6 +1460,7 @@ class Model:
         Returns:
             List[Space]: A list of Space objects representing the inferred spaces.
         """
+        space_counter = 0
         if dimentions == '2d':
     
            
@@ -1254,13 +1549,12 @@ class Model:
 
                 if face:
 
-                    space_id = generate_id('space')
+          
                     cell = Cell.ByThickenedFace(face, thickness=max([boundary.height for boundary in cycle_boundaries]))
                     # Create geometry from the cell
                     geometry = Geometry.from_topology(cell)
                     space = Space(
-                        id=space_id,
-                        name=f"Space {space_id}",
+                        name="Space {}".format(space_counter),
                         geometry=geometry,
                         topology=cell,
                         boundaries=cycle_boundaries,
@@ -1268,6 +1562,15 @@ class Model:
                     )
                     
                     self.spaces[space_id] = space
+                    space_counter += 1
+
+                    # Add the space to the building graph
+                    features = {
+                        'space_id': space.id,
+                        'name': space.name,
+                        'volume': space.geometry.compute_volume(),
+                    }
+                    self.building_graph.add_node('Space', node_id=space.id, features=features)
 
                 else:
                     # see if we can heal the boundaries by trimming them to form a closed polygon
@@ -1312,10 +1615,8 @@ class Model:
                         
                         # Create geometry from the cell
                         geometry = Geometry.from_topology(cell)
-                        space_id = generate_id('space')
                         space = Space(
-                            id=space_id,
-                            name=f"Space {space_id}",
+                            name="Space {}".format(space_counter),
                             boundaries=cycle_boundaries,
                             area=Face.Area(face),
                             geometry=geometry,  # Assuming area as a proxy for area in 2D
@@ -1323,6 +1624,15 @@ class Model:
                         )
                         
                         self.spaces[space_id] = space
+                        space_counter += 1
+
+                        # Add the space to the building graph
+                        features = {
+                            'space_id': space.id,
+                            'name': space.name,
+                            'volume': space.geometry.compute_volume(),
+                        }
+                        self.building_graph.add_node('Space', node_id=space.id, features=features)
                 
         elif dimentions == '3d':
             from itertools import combinations
@@ -1405,8 +1715,7 @@ class Model:
                     cell = Topology.SetDictionary(cell, cell_dict)
 
                     space = Space(
-                        id=space_id,
-                        name=f"Space {space_id}",
+                        name="Space {}".format(space_counter),
                         geometry=geometry,
                         topology=cell,
                         boundaries=[b for b in self.boundaries.values() if b.geometry in combo],
@@ -1414,6 +1723,15 @@ class Model:
                     )
                     
                     self.spaces[space_id] = space
+                    space_counter += 1
+
+                    # Add the space to the building graph
+                    features = {
+                        'name': space.name,
+                        'volume': space.geometry.compute_volume(),
+                    }  
+                    self.building_graph.add_node('Space', node_id=space.id, features=features)
+
     def generate_adjacency_graph(self):
         """
         Generates an adjacency graph using topologicpy and converts it into a graph with relationships
@@ -2024,3 +2342,91 @@ class Model:
         max_x, max_y, max_z = np.max(all_vertices, axis=0)
         return (min_x, min_y, min_z, max_x, max_y, max_z)
     
+    def ask(self, question: str, **kwargs) -> str:
+        """
+        Ask a question about the model by using LLM to generate and run a Cypher query on the building graph.
+
+        Leverages:
+        - self.building_graph.get_node_types_to_string()
+        - self.building_graph.get_relationship_types_to_string()
+        - self.building_graph.get_connection_schema_string()
+        - self.building_graph.query() to execute the generated query
+        
+        Args:
+            question (str): The natural language question to ask.
+            **kwargs: Additional options like OpenAI parameters.
+        
+        Returns:
+            str: The answer generated from the graph query result.
+        """
+        import openai
+
+        # Step 1: Get schema context
+        node_types = self.building_graph.get_node_types_to_string()
+        rel_types = self.building_graph.get_relationship_types_to_string()
+        connections = self.building_graph.get_connection_schema_string()
+
+        # Step 2: Construct system prompt
+        system_prompt = f"""
+    You are an expert in querying a building model stored in a graph database.
+    Here is the graph schema:
+    - Node Types: {node_types}
+    - Relationship Types: {rel_types}
+    - Connection Patterns:\n{connections}
+
+    Given a user's question, return a Cypher query that can be run on this graph to answer it.
+    Always use the available types and relationships, and return only the query.
+    """
+
+        # Step 3: Get Cypher query from OpenAI
+        response = openai.ChatCompletion.create(
+            model=kwargs.get("model", "gpt-4"),
+            messages=[
+                {"role": "system", "content": system_prompt.strip()},
+                {"role": "user", "content": f"User question: {question}"}
+            ],
+            temperature=kwargs.get("temperature", 0),
+            max_tokens=200
+        )
+        cypher_query = response['choices'][0]['message']['content'].strip()
+
+        # Step 4: Execute query on graph
+        try:
+            result = self.buliding_graph.query(cypher_query)
+        except Exception as e:
+            return f"Error running query: {e}\nQuery:\n{cypher_query}"
+
+        if not result:
+            return f"No result found.\nQuery:\n{cypher_query}"
+
+        # Step 5: Format result
+        result_str = str(result)
+
+        # Step 6: Ask OpenAI to interpret the result
+        interpret_prompt = f"""
+    You wrote and executed the following Cypher query:
+
+    {cypher_query}
+
+    It returned the following result:
+
+    {result_str}
+
+    Answer the user's question using the result in natural language:
+    "{question}"
+    """
+
+        answer_response = openai.ChatCompletion.create(
+            model=kwargs.get("model", "gpt-4"),
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that summarizes database query results into natural language."},
+                {"role": "user", "content": interpret_prompt.strip()}
+            ],
+            temperature=kwargs.get("temperature", 0.2),
+            max_tokens=300
+        )
+
+        final_answer = answer_response['choices'][0]['message']['content'].strip()
+
+        return f"Query:\n{cypher_query}\n\nResult:\n{result_str}\n\nAnswer:\n{final_answer}"
+        

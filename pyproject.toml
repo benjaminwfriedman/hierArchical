@@ -10,7 +10,11 @@ dependencies = [
     "networkx",
     "matplotlib",
     "trimesh",
-    "topologicpy"
+    "topologicpy",
+    "ipython",
+    "nbformat",
+    "kuzu",
+    "openai"
 ]
 
 [build-system]
