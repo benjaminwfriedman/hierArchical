@@ -26,7 +26,7 @@ if __name__ == "__main__":
 
     
 
-    # --- Stud Elements ---
+    # --- Stud Elements ---gi
     stud_base = Element(
         id=generate_id("stud"),
         name="2x4 Stud",
@@ -207,15 +207,13 @@ if __name__ == "__main__":
     objects = [wall_long_1, wall_long_2, wall_short_1, wall_short_2,
                deck, deck2, wall_long_3, wall_long_4, wall_short_3, created_door, deck_roof, deck2_roof]
     
-
+    # Instantiate the model
     model = Model.from_objects(objects)
-    model.create_adjacency_relationships(tolerance=0.001)
-    model.infer_bounds()
-    # model.show_boundaries_graph()
-    model.infer_spaces()
-    model.show_spaces()
+   
+    # explore the model
     model.show_objects()
-
+    model.show_spaces()
+    model.show_spaces_graph()
   
     print('Model has {} spaces'.format(len(model.spaces)))
 
