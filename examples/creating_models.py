@@ -28,7 +28,6 @@ if __name__ == "__main__":
 
     # --- Stud Elements ---gi
     stud_base = Element(
-        id=generate_id("stud"),
         name="2x4 Stud",
         type="stud",
         geometry=Geometry.from_prism(
@@ -45,7 +44,6 @@ if __name__ == "__main__":
     # --- Plywood Elements ---
     def make_plywood(name, width):
         return Element(
-            id=generate_id("plywood"),
             name=name,
             type="plywood sheet",
             geometry=Geometry.from_prism(
@@ -79,7 +77,6 @@ if __name__ == "__main__":
 
     # --- Floor Deck ---
     subfloor_panel = Element(
-        id=generate_id("subfloor"),
         name="Subfloor Panel",
         type="subfloor panel",
         geometry=Geometry.from_prism(
@@ -113,7 +110,6 @@ if __name__ == "__main__":
 
         # Wooden side beam: 4in x 4in x 8ft
     beam = Element(
-        id=generate_id('beam'),
         name="wooden beam",
         type="beam",
         material="wood",
@@ -126,7 +122,6 @@ if __name__ == "__main__":
 
     # Short bottom beam: 3ft x 4in x 2in
     short_beam = Element(
-        id=generate_id('beam'),
         name="short wooden beam",
         type="beam",
         material="wood",
@@ -140,7 +135,6 @@ if __name__ == "__main__":
 
     # Top header beam: 3ft x 4in x 4in, positioned at top
     header_beam = Element(
-        id=generate_id('header_beam'),
         name="header beam",
         type="beam",
         material="wood",
@@ -155,7 +149,6 @@ if __name__ == "__main__":
 
     # Central door sheet: 3ft x 2in x (8ft - 4in)
     sheet = Element(
-        id=generate_id('sheet'),
         name="sheet",
         type="sheet",
         material="wood",
@@ -209,13 +202,19 @@ if __name__ == "__main__":
     
     # Instantiate the model
     model = Model.from_objects(objects)
-   
+    
+    
     # explore the model
-    model.show_objects()
-    model.show_spaces()
-    model.show_spaces_graph()
+    # model.show_objects()
+    # model.show_spaces()
+    # model.show_spaces_graph()
+
+    print("Q: What spaces are in the model?")
+    print(model.ask("What spaces are in the model?"))
+
+    print("Q: What spaces are next to Space 1?")
+    print(model.ask("What spaces are next to Space 1?"))
   
-    print('Model has {} spaces'.format(len(model.spaces)))
 
 
 
