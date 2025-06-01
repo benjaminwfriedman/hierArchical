@@ -205,11 +205,15 @@ if __name__ == "__main__":
     
     
     # explore the model
-    model.show_objects()
-    model.show_spaces()
-    model.show_spaces_graph()
+    # model.show_objects()
+    # model.show_spaces()
+    # model.show_spaces_graph()
 
+    print("Q: What spaces are in the model?")
     print(model.ask("What spaces are in the model?"))
+
+    print("Q: What spaces are next to Space 1?")
+    print(model.ask("What spaces are next to Space 1?"))
   
 
 

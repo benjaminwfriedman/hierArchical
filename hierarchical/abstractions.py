@@ -621,6 +621,9 @@ class BuildingGraph(Graph):
         self.conn.execute("CREATE REL TABLE IF NOT EXISTS OBJECT_ADJACENT_TO(FROM Object TO Object, type STRING)")
         self.conn.execute("CREATE REL TABLE IF NOT EXISTS BOUNDARY_ADJACENT_TO(FROM Boundary TO Boundary, type STRING)")
         self.conn.execute("CREATE REL TABLE IF NOT EXISTS OBJECT_CREATES_BOUNDARY(FROM Object TO Boundary, type STRING)")
+        self.conn.execute("CREATE REL TABLE IF NOT EXISTS BOUNDARY_CREATES_SPACE(FROM Boundary TO Space, type STRING)")
+        self.conn.execute("CREATE REL TABLE IF NOT EXISTS SPACE_ADJACENT_TO(FROM Space TO Space, type STRING)")
+
 
 
 
@@ -684,8 +687,8 @@ class Model:
             model.building_graph.add_node("Object", node_id=obj.id, **features)
 
         model.create_object_adjacency_relationships(tolerance=0.001)
-        model.infer_bounds()
-        model.infer_spaces()
+        model.infer_bounds(dimentions='3d')
+        model.infer_spaces(dimentions='3d')
         model.generate_adjacency_graph()
 
 
@@ -1557,21 +1560,32 @@ class Model:
                     space = Space(
                         name="Space {}".format(space_counter),
                         geometry=geometry,
-                        topology=cell,
                         boundaries=cycle_boundaries,
                         area=Face.Area(face) # Assuming area as a proxy for area in 2D
                     )
 
-                    self.spaces[space_id] = space
+                    cell_dict = Topology.Dictionary(cell)
+                    cell_dict = Dictionary.SetValueAtKey(cell_dict, 'space_id', space.id)
+                    cell = Topology.SetDictionary(cell, cell_dict)
+                    space.topology = cell
+
+                    self.spaces[space.id] = space
                     space_counter += 1
 
                     # Add the space to the building graph
                     features = {
-                        'space_id': space.id,
                         'name': space.name,
                         'volume': space.geometry.compute_volume(),
                     }
                     self.building_graph.add_node('Space', node_id=space.id, features=features)
+
+                    # add relationship between bounds and spaces
+                    for boundary in space.boundaries:
+                        rel = Creates(boundary.id, space.id)
+                        boundary.relationships.append(rel)
+                        self.relationships[boundary.id].append(rel)
+                        self.building_graph.add_edge(boundary.id, space.id, "BOUNDARY_CREATES_SPACE", from_label='Boundary', to_label='Space')
+
 
                 else:
                     # see if we can heal the boundaries by trimming them to form a closed polygon
@@ -1621,19 +1635,29 @@ class Model:
                             boundaries=cycle_boundaries,
                             area=Face.Area(face),
                             geometry=geometry,  # Assuming area as a proxy for area in 2D
-                            topology=cell
                         )
 
-                        self.spaces[space_id] = space
+                        cell_dict = Topology.Dictionary(cell)
+                        cell_dict = Dictionary.SetValueAtKey(cell_dict, 'space_id', space.id)
+                        cell = Topology.SetDictionary(cell, cell_dict)
+                        space.topology = cell
+
+                        self.spaces[space.id] = space
                         space_counter += 1
 
                         # Add the space to the building graph
                         features = {
-                            'space_id': space.id,
                             'name': space.name,
                             'volume': space.geometry.compute_volume(),
                         }
                         self.building_graph.add_node('Space', node_id=space.id, features=features)
+
+                        # add relationship between bounds and spaces
+                        for boundary in space.boundaries:
+                            rel = Creates(boundary.id, space.id)
+                            boundary.relationships.append(rel)
+                            self.relationships[boundary.id].append(rel)
+                            self.building_graph.add_edge(boundary.id, space.id, "BOUNDARY_CREATES_SPACE", from_label='Boundary', to_label='Space')
 
         elif dimentions == '3d':
             from itertools import combinations
@@ -1666,6 +1690,11 @@ class Model:
                 topologic_vertices = [Vertex.ByCoordinates(x=v[0], y=v[1], z=v[2]) for v in boundary.geometry.get_vertices()]
                 topologic_face = Face.ByVertices(topologic_vertices, tolerance=0.01)
                 if topologic_face:
+                    face_dict = Topology.Dictionary(topologic_face)
+                    face_dict = Dictionary.SetValueAtKey(face_dict, 'boundary_id', boundary.id)
+                    topologic_face = Topology.SetDictionary(topologic_face, face_dict)
+
+
                     topologic_faces.append(topologic_face)
 
             # find all combinations of 4+ faces that form a closed volume
@@ -1715,15 +1744,30 @@ class Model:
                     cell_dict = Dictionary.SetValueAtKey(cell_dict, 'space_id', space_id)
                     cell = Topology.SetDictionary(cell, cell_dict)
 
+                    # get cell boundaries 
+                    boundaries = []
+                    
+                    for face in combo:
+                        face_dict = Topology.Dictionary(face)
+                        boundary_id = Dictionary.ValueAtKey(face_dict, 'boundary_id')
+                        if boundary_id is not None:
+                            boundary = self.boundaries.get(boundary_id)
+                            if boundary:
+                                boundaries.append(boundary)
+
                     space = Space(
                         name="Space {}".format(space_counter),
                         geometry=geometry,
-                        topology=cell,
-                        boundaries=[b for b in self.boundaries.values() if b.geometry in combo],
+                        boundaries=boundaries,
                         volume=Geometry.compute_volume(geometry)  # Assuming volume as a proxy for area in 3D
                     )
 
-                    self.spaces[space_id] = space
+                    cell_dict = Topology.Dictionary(cell)
+                    cell_dict = Dictionary.SetValueAtKey(cell_dict, 'space_id', space.id)
+                    cell = Topology.SetDictionary(cell, cell_dict)
+                    space.topology = cell
+
+                    self.spaces[space.id] = space
                     space_counter += 1
 
                     # Add the space to the building graph
@@ -1733,12 +1777,34 @@ class Model:
                     }  
                     self.building_graph.add_node('Space', node_id=space.id, features=features)
 
+                    # add relationship between bounds and spaces
+                    for boundary in space.boundaries:
+                        rel = Creates(boundary.id, space.id)
+                        boundary.relationships.append(rel)
+                        self.relationships[boundary.id].append(rel)
+                        self.building_graph.add_edge(boundary.id, space.id, "BOUNDARY_CREATES_SPACE", from_label='Boundary', to_label='Space')
+
     def generate_adjacency_graph(self):
         """
         Generates an adjacency graph using topologicpy and converts it into a graph with relationships
         """
         from topologicpy.CellComplex import CellComplex
         from topologicpy.Graph import Graph
+
+        def get_neighbors_by_attribute(G, key, value):
+            # Find the node with the matching attribute value
+            target_node = None
+            for node, data in G.nodes(data=True):
+                if data.get(key) == value:
+                    target_node = node
+                    break
+            
+            if target_node is None:
+                return f"No node found with {key} = {value}"
+
+            # Get the neighbors of the node
+            neighbors = list(G.neighbors(target_node))
+            return neighbors
 
         spaces = self.spaces.values()
         if not spaces:
@@ -1758,7 +1824,17 @@ class Model:
 
         self.space_adjacency_graph = space_graph_nx
 
-
+        # Add adjcacency edges to the building graph
+        for space_id in self.spaces:
+            space = self.spaces[space_id]
+            # find the neighbors of the node with attribute "space_id" == space.id
+            neighbors = get_neighbors_by_attribute(space_graph_nx, 'space_id', space.id)
+            for neighbor in neighbors:
+                neighbor_space_id = space_graph_nx.nodes[neighbor]['space_id']
+                if neighbor_space_id is not None:
+                    # Add an edge to the building graph
+                    self.building_graph.add_edge(space.id, neighbor_space_id, 'SPACE_ADJACENT_TO', from_label='Space', to_label='Space')
+                
     def show_boundaries(self):
         """
         Display boundaries using Plotly for better 3D interaction.
