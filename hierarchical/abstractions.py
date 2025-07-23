@@ -1,13 +1,15 @@
+from tqdm import tqdm
 from hierarchical.items import Element, Component, Wall, Deck, Window, Door, Object, BaseItem
 from hierarchical.relationships import AdjacentTo, Relationship, Creates
 from hierarchical.geometry import Geometry
+from hierarchical.helpers import test_healing_validation
 from collections import defaultdict
 import networkx as nx
 import numpy as np
 from typing import List, Tuple, Dict, Optional
 from dataclasses import dataclass, field
 from copy import deepcopy
-from hierarchical.utils import generate_id, plot_shapely_geometries, plot_topologic_objects, plot_items
+from hierarchical.utils import generate_id, plot_shapely_geometries, plot_topologic_objects, plot_items, random_color, plot_opencascade_shapes
 import matplotlib.pyplot as plt
 from topologicpy.Edge import Edge
 from topologicpy.Face import Face
@@ -15,13 +17,30 @@ from topologicpy.Vertex import Vertex
 from topologicpy.Cell import Cell
 from topologicpy.Topology import Topology
 from topologicpy.Dictionary import Dictionary
+from OCC.Core.GProp import GProp_GProps
+from OCC.Core.BRepGProp import brepgprop
+from OCC.Core.BRep import BRep_Tool
+from OCC.Core.GeomLProp import GeomLProp_SLProps
+from OCC.Core.TopExp import TopExp_Explorer
+from OCC.Core.TopAbs import TopAbs_VERTEX, TopAbs_EDGE
+from OCC.Core.TopoDS import topods
+from OCC.Core import TopoDS
+from math import comb
+
+
+from itertools import combinations
 import plotly.graph_objects as go
 import kuzu
 import uuid
 from uuid import uuid4
 from openai import OpenAI
+from OCC.Core.BRepTools import breptools
+import os
+import numpy as np
 
-client = OpenAI(api_key="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")
+
+
+client = OpenAI(api_key="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")
 
 
 
@@ -72,20 +91,20 @@ def triangulate_polygon_3d(vertices_3d, normal=None):
     delaunay = Delaunay(points_2d)
     return [tuple(triangle) for triangle in delaunay.simplices]
 
-@dataclass
-class Boundary:
-    """Represents a space boundary with its properties and geometry."""
-    name: str
-    type: str  # 'full', 'partial', 'open'
-    geometry: 'Geometry'
-    is_access_boundary: bool
-    is_visual_boundary: bool
-    base_item: 'BaseItem'  # Wall elements that form this boundary
-    height: float
-    normal_vector: Tuple[float, float, float]
-    adjacent_spaces: List[str]  # IDs of spaces this boundary separates
-    relationships: List[Relationship] = field(default_factory=list)
 
+@dataclass
+class Boundary(BaseItem):
+    """Represents a space boundary with its properties and geometry."""
+    
+    is_access_boundary: bool = False
+    is_visual_boundary: bool = False
+    base_item: Optional[BaseItem] = None
+    height: float = 0.0
+    normal_vector: Tuple[float, float, float] = (0.0, 0.0, 1.0)
+    adjacent_spaces: List[str] = field(default_factory=list)
+    
+    # Override parent defaults if needed
+    relationships: List[Relationship] = field(default_factory=list)
     id: str = field(default_factory=lambda: str(uuid4()))
 
     def __post_init__(self):
@@ -461,6 +480,7 @@ class Graph(ABC):
         attr_str = ", ".join(f"{k}: {self._format_value(v)}" for k, v in flat_attrs.items())
         query = f"CREATE (:{label} {{ {attr_str} }})"
         self.conn.execute(query)
+        print(query)
         return node_id
 
     def add_edge(self, from_id: str, to_id: str, rel_type: str, from_label: str = "Node", to_label: str = "Node", **attributes):
@@ -610,7 +630,7 @@ class BuildingGraph(Graph):
         Create the building graph schema in the database.
         """
         # create node tables
-        self.conn.execute("CREATE NODE TABLE IF NOT EXISTS Space(id STRING PRIMARY KEY, name STRING, volume FLOAT)")
+        self.conn.execute("CREATE NODE TABLE IF NOT EXISTS Space(id STRING PRIMARY KEY, name STRING, volume FLOAT, centroid_x FLOAT, centroid_y FLOAT, centroid_z FLOAT)")
         # create node tables for other object types
         self.conn.execute("CREATE NODE TABLE IF NOT EXISTS Object(id STRING PRIMARY KEY, type STRING, volume FLOAT, centroid_x FLOAT, centroid_y FLOAT, centroid_z FLOAT)")
         self.conn.execute("CREATE NODE TABLE IF NOT EXISTS Element(id STRING PRIMARY KEY, type STRING, volume FLOAT, centroid_x FLOAT, centroid_y FLOAT, centroid_z FLOAT)")
@@ -634,7 +654,8 @@ class Model:
     - contain spaces and zones.
     - contain relationships between all types of items
     """
-    def __init__(self):
+    def __init__(self, name):
+        self.name = name
         self.elements = {}
         self.components = {}
         self.objects = {}
@@ -642,16 +663,18 @@ class Model:
         self.zones = {}
         self.relationships = defaultdict(list)
         self.boundaries = {}
-        self.building_graph = BuildingGraph(db_path="./building_graph.db")  # Initialize the building graph
         # Boundary Graph - Might collapse with building_graph in future
-        self.boundary_graph = nx.Graph()  
+        self.boundary_graph = nx.Graph()
+        self.id = str(uuid.uuid4())  # Unique identifier for the model
+        self.building_graph = BuildingGraph(db_path=f"./building_dbs/{self.id}_building_graph.db")  # Initialize the building graph
+
 
     @classmethod
-    def from_objects(cls, objects):
+    def from_objects(cls, name, objects):
         """
         Create a model from a list of objects.
         """
-        model = cls()
+        model = cls(name)
         for obj in objects:
             if isinstance(obj, Element):
                 model.elements[obj.id] = obj
@@ -707,485 +730,633 @@ class Model:
                 # Add edge to graph
                 self.building_graph.add_edge(obj.id, adjacent_item.id, "OBJECT_ADJACENT_TO", from_label="Object", to_label="Object")
 
-    ### Bounds
-    def heal_boundaries(self, dimentions: str = "3d", max_extension: float = 2.0, extension_step: float = 0.01, max_iterations: int = 200):
-        """
-        2D Boundary Healing:
-        Heal boundaries by interpreting them as lines and calculating direct intersections.
-        Much more efficient than iterative extension.
+
+    def heal_boundaries(self, tolerance=15.0):
+        """Heal boundaries with comprehensive shape fixing and gap filling"""
+        from OCC.Core.BRepBuilderAPI import (BRepBuilderAPI_Sewing, BRepBuilderAPI_MakePolygon, 
+                                            BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeShell)
+        from OCC.Core.gp import gp_Pnt, gp_Pln, gp_Dir, gp_Vec
+        from OCC.Core.BRep import BRep_Tool
+        from OCC.Core.TopExp import TopExp_Explorer
+        from OCC.Core.TopAbs import TopAbs_VERTEX, TopAbs_EDGE, TopAbs_FACE
+        from OCC.Core.ShapeFix import (ShapeFix_Shape, ShapeFix_Wireframe, 
+                                    ShapeFix_Shell, ShapeFix_FixSmallFace)
+        from OCC.Core.ShapeAnalysis import ShapeAnalysis_FreeBounds
+        from OCC.Core.ShapeUpgrade import ShapeUpgrade_RemoveInternalWires
+        from OCC.Core.GeomAPI import GeomAPI_ProjectPointOnSurf
+        from OCC.Core.BRepClass3d import BRepClass3d_SolidClassifier
+        from OCC.Core import TopoDS
+
+
+        from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Sewing
+
         
-        Args:
-            max_extension: Maximum distance to extend any boundary (in meters)
-            extension_step: Not used in direct intersection approach
-            max_iterations: Not used in direct intersection approach
+        all_boundaries = list(self.boundaries.values())
+        
+        # Step 1: Create initial faces with better polygon construction
+        initial_faces = []
+        for boundary in all_boundaries:
+            face = self._create_robust_face(boundary, tolerance)
+            if face:
+                initial_faces.append(face)
 
+        print(f"Created {len(initial_faces)} initial faces")
 
+        # Define face groups with indices to track overlaps
+        # face_group_indices = [
+        #     [0, 1, 2, 3, 7, 9],      # Group 1
+        #     [3, 4, 5, 6, 8, 10]      # Group 2 (face 3 is shared)
+        # ]
 
-        3D Boundary Healing:
-        Heal boundaries by interpreting them as planes and calculating direct intersections.
+        shape_groups = self.find_enclosed_shape_groups(initial_faces)
 
+        shape_groups.sort(key=lambda x: x['face_count'], reverse=True)
+
+        filtered_shape_groups = []
+        for current_group in shape_groups:
+            current_faces = set(current_group['face_indices'])
+            is_subset = False
+            
+            # Check if current group is subset of any already selected group
+            for selected_group in filtered_shape_groups:
+                selected_faces = set(selected_group['face_indices'])
+                if current_faces.issubset(selected_faces):
+                    is_subset = True
+                    break
+            
+            # Only add if it's not a subset
+            if not is_subset:
+                filtered_shape_groups.append(current_group)
+
+        face_group_indices = [group['face_indices'] for group in filtered_shape_groups]
+
+        healed_face_groups = []
+        # face_mapping = {i: [] for i in range(len(initial_faces))}
+        face_mapping = {i: [] for i in range(len(initial_faces))}
+
+        for group_idx, face_indices in enumerate(face_group_indices):
+            face_indices = face_group_indices[group_idx]
+            face_group = [initial_faces[i] for i in face_indices]
+
+            # Create and configure the sewing tool
+            sewer = BRepBuilderAPI_Sewing(0.1)
+            sewer.SetNonManifoldMode(True)
+            for face in face_group:
+                sewer.Add(face)
+            sewer.Perform()
+            sewn_shape = sewer.SewedShape()
+
+            healed_faces = []
+            face_explorer = TopExp_Explorer(sewn_shape, TopAbs_FACE)
+
+            while face_explorer.More():
+                face = TopoDS.topods.Face(face_explorer.Current())
+                healed_faces.append(face)
+                face_explorer.Next()
+
+            healed_face_groups.append(healed_faces)
+
+            # map original face indices to healed faces
+            for i in range(len(healed_faces)):
+                original_idx = face_indices[i]
+                face_mapping[original_idx].append(healed_faces[i])
+        
+        # if there are two versions of the same face, we need to merge them
+        all_healed_faces = []
+        for original_idx, healed_faces in face_mapping.items():
+            if len(healed_faces) == 1:
+                all_healed_faces.append(healed_faces[0])
+            elif len(healed_faces) > 1:
+                # Merge faces with a sewing operation
+                sewer = BRepBuilderAPI_Sewing(0.1)
+                for face in healed_faces:
+                    sewer.Add(face)
+                sewer.Perform()
+                merged_shape = sewer.SewedShape()
+                
+                # Extract the merged face
+                face_explorer = TopExp_Explorer(merged_shape, TopAbs_FACE)
+                if face_explorer.More():
+                    all_healed_faces.append(TopoDS.topods.Face(face_explorer.Current()))
+
+        # Step 9: Update boundary geometries with improved vertex extraction
+        self._update_boundary_geometries(all_boundaries, all_healed_faces)
+        
+        return all_healed_faces
+
+    def _create_robust_face(self, boundary, tolerance):
+        """Create a robust face from boundary with error handling"""
+        from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakePolygon, BRepBuilderAPI_MakeFace
+        from OCC.Core.gp import gp_Pnt
+        from OCC.Core.ShapeFix import ShapeFix_Wire
+        
+        try:
+            vertices = boundary.geometry.get_vertices()
+            if len(vertices) < 3:
+                return None
+            
+            # Create polygon with validation
+            polygon = BRepBuilderAPI_MakePolygon()
+            points = []
+            
+            for vertex in vertices:
+                if hasattr(vertex, 'x'):
+                    point = gp_Pnt(vertex.x, vertex.y, vertex.z)
+                else:
+                    point = gp_Pnt(float(vertex[0]), float(vertex[1]), float(vertex[2]))
+                points.append(point)
+                polygon.Add(point)
+            
+            # Ensure polygon is closed
+            if not polygon.Wire().Closed():
+                polygon.Close()
+            
+            if not polygon.IsDone():
+                return None
+            
+            # Fix the wire before creating face
+            wire = polygon.Wire()
+            wire_fixer = ShapeFix_Wire()
+            wire_fixer.SetPrecision(tolerance)
+            wire_fixer.Load(wire)
+            wire_fixer.Perform()
+            fixed_wire = wire_fixer.Wire()
+            
+            # Create face
+            face_maker = BRepBuilderAPI_MakeFace(fixed_wire)
+            if face_maker.IsDone():
+                return face_maker.Face()
+            
+        except Exception as e:
+            print(f"Error creating face for boundary: {e}")
+        
+        return None
+
+    
+
+    def get_face_normal_and_center(self, face):
+        """Get the center point and outward normal of a face"""
+        
+        # Get face centroid
+        props = GProp_GProps()
+        brepgprop.SurfaceProperties(face, props)
+        centroid = props.CentreOfMass()
+        center = np.array([centroid.X(), centroid.Y(), centroid.Z()])
+        
+        # Get surface and normal at center
+        surface = BRep_Tool.Surface(face)
+        umin, umax, vmin, vmax = breptools.UVBounds(face)
+        u_center = (umin + umax) / 2
+        v_center = (vmin + vmax) / 2
+        
+        try:
+            props_surface = GeomLProp_SLProps(surface, u_center, v_center, 1, 1e-6)
+            if props_surface.IsNormalDefined():
+                normal = props_surface.Normal()
+                normal_vec = np.array([normal.X(), normal.Y(), normal.Z()])
+                normal_vec = normal_vec / np.linalg.norm(normal_vec)
+            else:
+                normal_vec = np.array([0, 0, 1])
+        except:
+            normal_vec = np.array([0, 0, 1])
+        
+        return center, normal_vec, -normal_vec
+
+    def find_convergence_point(self, face_centers, face_normals):
+        """Find where inward-pointing normals converge"""
+        
+        if len(face_centers) < 3:
+            return None, float('inf')
+        
+        # For each pair of faces, find intersection of inward normal lines
+        intersection_points = []
+        
+        for i in range(len(face_centers)):
+            for j in range(i + 1, len(face_centers)):
+                center_i, center_j = face_centers[i], face_centers[j]
+                inward_i, inward_j = -face_normals[i], -face_normals[j]
+                
+                # Solve line intersection: center_i + t*inward_i ≈ center_j + s*inward_j
+                w = center_i - center_j
+                a = np.dot(inward_i, inward_i)
+                b = np.dot(inward_i, inward_j)
+                c = np.dot(inward_j, inward_j)
+                d = np.dot(inward_i, w)
+                e = np.dot(inward_j, w)
+                
+                denom = a * c - b * b
+                if abs(denom) > 1e-10:
+                    t = (b * e - c * d) / denom
+                    s = (a * e - b * d) / denom
+                    
+                    point_i = center_i + t * inward_i
+                    point_j = center_j + s * inward_j
+                    intersection_points.append((point_i + point_j) / 2)
+        
+        if not intersection_points:
+            return None, float('inf')
+        
+        # Find average convergence point
+        convergence_point = np.mean(intersection_points, axis=0)
+        
+        # Calculate how well normals converge (lower is better)
+        convergence_error = 0
+        for point in intersection_points:
+            convergence_error += np.linalg.norm(point - convergence_point)
+        
+        return convergence_point, convergence_error / len(intersection_points)
+
+    # Extract your existing logic into a standalone function
+    def process_single_face_combination(self, face_indices, face_data, faces, group_size, max_convergence_error, 
+                                    find_convergence_point_func, edges_are_close_func):
         """
-        print(f"Starting boundary healing process with {len(self.boundaries)} boundaries...")
-
-        if dimentions == '2d':
-            healed_pairs = set()  # Track which boundary pairs have been healed
-
-            for boundary_id, boundary in self.boundaries.items():
-                if not hasattr(boundary, 'geometry') or not boundary.geometry:
-                    continue
-
-                # find the boundaries that refer the the adjacent items to the base_item of the boundary
-                base_item_relationships = self.relationships[boundary.base_item.id]
-                adjacent_boundaries = []
-                for r in base_item_relationships:
-                    if isinstance(r, AdjacentTo):
-                        target_item = r.target
-                        # check if there is a boundary for this target item
-                        try:
-                            target_object = self.objects[target_item]
-                            if not hasattr(target_object, 'boundary_id'):
-                                continue  # Skip if no boundary_id exists
-                            target_boundary = target_object.boundary_id
-                            target_boundary = self.boundaries[target_boundary]
-                            adjacent_boundaries.append(target_boundary)
-                        except KeyError:
-                            # If no boundary exists for this target item, we can skip it
-                            continue
-
-                for adj_boundary in adjacent_boundaries:
-                    pair_key = tuple(sorted([boundary_id, adj_boundary.id]))
-                    if pair_key in healed_pairs:
-                        continue  # Already healed this pair
-
-                    # Check current intersection status
-                    intersects = boundary.geometry.bbox_intersects(adj_boundary.geometry)
-
-                    if intersects:
-                        print(f"Boundaries {boundary_id} and {adj_boundary.id} already intersect")
-                        healed_pairs.add(pair_key)
-                        continue
-
-                    # get bottom edge of the boundary
-                    start_point = boundary.get_start_point_bottom()
-                    end_point = boundary.get_end_point_bottom()
-
-                    # line function y = mx + b
-                    m = (end_point[1] - start_point[1]) / (end_point[0] - start_point[0]) if end_point[0] != start_point[0] else float('inf')
-                    b = start_point[1] - m * start_point[0] if m != float('inf') else start_point[0]
-
-                    # line function adj y = m_adj * x + b_adj
-                    adj_start_point = adj_boundary.get_start_point_bottom()
-                    adj_end_point = adj_boundary.get_end_point_bottom()
-                    m_adj = (adj_end_point[1] - adj_start_point[1]) / (adj_end_point[0] - adj_start_point[0]) if adj_end_point[0] != adj_start_point[0] else float('inf')
-                    b_adj = adj_start_point[1] - m_adj * adj_start_point[0] if m_adj != float('inf') else adj_start_point[0]
-
-                    # Calculate intersection point
-                    if m == m_adj:
-                        print(f"Boundaries {boundary_id} and {adj_boundary.id} are parallel, skipping healing")
-                        continue
-                    if m == float('inf'):
-                        # Boundary is vertical
-                        intersection_x = start_point[0]
-                        intersection_y = m_adj * intersection_x + b_adj
-                    elif m_adj == float('inf'):
-                        # Adjacent boundary is vertical
-                        intersection_x = adj_start_point[0]
-                        intersection_y = m * intersection_x + b
-                    else:
-                        # Solve for intersection
-                        intersection_x = (b_adj - b) / (m - m_adj)
-                        intersection_y = m * intersection_x + b
-
-                    intersection_point = (intersection_x, intersection_y, start_point[2])  # Assuming z-coordinate is the same
-                    # NEW APPROACH: Extend boundary face toward intersection, not edge collapse
-                    intersection_x, intersection_y, intersection_z = intersection_point
-
-                    # Get current boundary bounds
-                    vertices_array = np.array(boundary.geometry.get_vertices())
-                    min_x, max_x = vertices_array[:, 0].min(), vertices_array[:, 0].max()
-                    min_y, max_y = vertices_array[:, 1].min(), vertices_array[:, 1].max()
-
-                    tolerance = 0.01  # 1cm tolerance
-
-                    # Create updated vertices list
-                    vertices_list = list(boundary.geometry.get_vertices())
-
-                    print(f"Boundary {boundary_id} bounds: X[{min_x:.3f}, {max_x:.3f}], Y[{min_y:.3f}, {max_y:.3f}]")
-                    print(f"Intersection: ({intersection_x:.3f}, {intersection_y:.3f}, {intersection_z:.3f})")
-
-                    # Extend vertices toward intersection point while maintaining wall structure
-                    vertices_modified = False
-                    for i, vertex in enumerate(vertices_list):
-                        x, y, z = vertex
-                        new_vertex = [x, y, z]
-                        original_vertex = new_vertex.copy()
-
-                        # Extend in X direction if intersection is outside current bounds
-                        if intersection_x > max_x and abs(x - max_x) < tolerance:
-                            new_vertex[0] = intersection_x  # Extend max-X face
-                            vertices_modified = True
-                            print(f"Extended vertex {i} in +X direction: {vertex} -> {tuple(new_vertex)}")
-                        elif intersection_x < min_x and abs(x - min_x) < tolerance:
-                            new_vertex[0] = intersection_x  # Extend min-X face  
-                            vertices_modified = True
-                            print(f"Extended vertex {i} in -X direction: {vertex} -> {tuple(new_vertex)}")
-
-                        # Extend in Y direction if intersection is outside current bounds
-                        if intersection_y > max_y and abs(y - max_y) < tolerance:
-                            new_vertex[1] = intersection_y  # Extend max-Y face
-                            vertices_modified = True
-                            print(f"Extended vertex {i} in +Y direction: {vertex} -> {tuple(new_vertex)}")
-                        elif intersection_y < min_y and abs(y - min_y) < tolerance:
-                            new_vertex[1] = intersection_y  # Extend min-Y face
-                            vertices_modified = True
-                            print(f"Extended vertex {i} in -Y direction: {vertex} -> {tuple(new_vertex)}")
-
-                        vertices_list[i] = tuple(new_vertex)
-
-                    if vertices_modified:
-                        print(f"Updated boundary geometry for {boundary_id} with new vertices: {vertices_list}")
-                    else:
-                        print(f"No vertices modified for {boundary_id} - intersection may be within bounds")
-
-                    # Update boundary geometry
-                    original_faces = boundary.geometry.get_faces()
-                    new_geometry = Geometry()
-                    new_geometry.mesh_data['vertices'] = vertices_list  
-                    new_geometry.mesh_data['faces'] = original_faces
-                    new_geometry._generate_brep_from_mesh()
-                    boundary.geometry = new_geometry
-
-                    # SAME APPROACH for adjacent boundary
-                    adj_vertices_array = np.array(adj_boundary.geometry.get_vertices())
-                    adj_min_x, adj_max_x = adj_vertices_array[:, 0].min(), adj_vertices_array[:, 0].max()
-                    adj_min_y, adj_max_y = adj_vertices_array[:, 1].min(), adj_vertices_array[:, 1].max()
-
-                    print(f"Adjacent boundary {adj_boundary.id} bounds: X[{adj_min_x:.3f}, {adj_max_x:.3f}], Y[{adj_min_y:.3f}, {adj_max_y:.3f}]")
-
-                    adj_vertices_list = list(adj_boundary.geometry.get_vertices())
-                    adj_vertices_modified = False
-
-                    for i, vertex in enumerate(adj_vertices_list):
-                        x, y, z = vertex
-                        new_vertex = [x, y, z]
-
-                        if intersection_x > adj_max_x and abs(x - adj_max_x) < tolerance:
-                            new_vertex[0] = intersection_x
-                            adj_vertices_modified = True
-                            print(f"Extended adjacent vertex {i} in +X direction: {vertex} -> {tuple(new_vertex)}")
-                        elif intersection_x < adj_min_x and abs(x - adj_min_x) < tolerance:
-                            new_vertex[0] = intersection_x
-                            adj_vertices_modified = True
-                            print(f"Extended adjacent vertex {i} in -X direction: {vertex} -> {tuple(new_vertex)}")
-
-                        if intersection_y > adj_max_y and abs(y - adj_max_y) < tolerance:
-                            new_vertex[1] = intersection_y
-                            adj_vertices_modified = True
-                            print(f"Extended adjacent vertex {i} in +Y direction: {vertex} -> {tuple(new_vertex)}")
-                        elif intersection_y < adj_min_y and abs(y - adj_min_y) < tolerance:
-                            new_vertex[1] = intersection_y
-                            adj_vertices_modified = True
-                            print(f"Extended adjacent vertex {i} in -Y direction: {vertex} -> {tuple(new_vertex)}")
-
-                        adj_vertices_list[i] = tuple(new_vertex)
-
-                    if adj_vertices_modified:
-                        print(f"Updated adjacent boundary geometry for {adj_boundary.id} with new vertices: {adj_vertices_list}")
-                    else:
-                        print(f"No vertices modified for adjacent boundary {adj_boundary.id}")
-
-                    # Update adjacent boundary geometry
-                    adj_original_faces = adj_boundary.geometry.get_faces()
-                    new_adj_geometry = Geometry()
-                    new_adj_geometry.mesh_data['vertices'] = adj_vertices_list
-                    new_adj_geometry.mesh_data['faces'] = adj_original_faces  
-                    new_adj_geometry._generate_brep_from_mesh()
-                    adj_boundary.geometry = new_adj_geometry
-
-                    # Add healed pair to set
-                    self.boundaries[boundary.id] = boundary
-                    self.boundaries[adj_boundary.id] = adj_boundary
-
-            print(f"Boundary healing process completed. Healed {len(healed_pairs)} pairs of boundaries.")
-        elif dimentions == '3d':
-            """
-            3D Boundary Healing:
-            Heal boundaries by interpreting them as planes and calculating direct intersections.
-            """
-            def plane_from_triangle(vertices):
-                p0, p1, p2 = [np.array(v) for v in vertices]
-                normal = np.cross(p1 - p0, p2 - p0)
-                normal = normal / np.linalg.norm(normal)
-                A, B, C = normal
-                D = np.dot(normal, p0)
-                return A, B, C, D, normal
-
-            def intersect_planes(plane1, plane2):
-                A1, B1, C1, D1, n1 = plane1
-                A2, B2, C2, D2, n2 = plane2
-
-                # Direction of intersection line
-                direction = np.cross(n1, n2)
-                if np.allclose(direction, 0):
-                    return None  # planes are parallel or coincident
-
-                # Solve system by fixing one coordinate (e.g., z = 0)
-                A = np.array([[A1, B1], [A2, B2]])
-                b = np.array([D1, D2])
-                try:
-                    if abs(np.linalg.det(A)) > 1e-6:
-                        x, y = np.linalg.solve(A, b)
-                        point = np.array([x, y, 0])
-                    else:
-                        # Try fixing y = 0
-                        A = np.array([[A1, C1], [A2, C2]])
-                        b = np.array([D1, D2])
-                        if abs(np.linalg.det(A)) > 1e-6:
-                            x, z = np.linalg.solve(A, b)
-                            point = np.array([x, 0, z])
-                        else:
-                            # Try fixing x = 0
-                            A = np.array([[B1, C1], [B2, C2]])
-                            b = np.array([D1, D2])
-                            y, z = np.linalg.solve(A, b)
-                            point = np.array([0, y, z])
-                except np.linalg.LinAlgError:
-                    return None
-
-                return {
-                    "point": point,
-                    "direction": direction / np.linalg.norm(direction)
+        Process a single face combination - this is your existing inner loop logic.
+        """
+        valid_groups = []
+        
+        # Your existing code with minimal changes:
+        # Try both normal orientations for each face
+        face_group_data = [face_data[i] for i in face_indices]
+        
+        # For each face, we can choose either normal1 or normal2
+        # Try all 2^n combinations
+        for combo_bits in range(2**len(face_group_data)):
+            centers = []
+            normals = []
+            
+            for bit_pos, (center, normal1, normal2, _) in enumerate(face_group_data):
+                centers.append(center)
+                # Use bit to choose which normal direction
+                if (combo_bits >> bit_pos) & 1:
+                    normals.append(normal2)
+                else:
+                    normals.append(normal1)
+            
+            # Find convergence point for this combination
+            conv_point, error = find_convergence_point_func(centers, normals)
+            
+            # Add directional validation after the convergence point check
+            if conv_point is not None and error < max_convergence_error:
+                # ... [rest of your existing validation logic] ...
+                # [I'm keeping the structure but truncating for brevity]
+                
+                # Check for directional coverage (6 cardinal directions)
+                directions = {
+                    'north': [0, 1, 0],   # +Y
+                    'south': [0, -1, 0],  # -Y  
+                    'east': [1, 0, 0],    # +X
+                    'west': [-1, 0, 0],   # -X
+                    'up': [0, 0, 1],      # +Z
+                    'down': [0, 0, -1]    # -Z
                 }
+                
+                direction_coverage = {direction: False for direction in directions}
+                
+                valid = True
+                distances = []
+                
+                for center, normal in zip(centers, normals):
+                    to_face = center - conv_point
+                    distance = np.linalg.norm(to_face)
+                    distances.append(distance)
+                    
+                    if distance > 1e-10:
+                        to_face_norm = to_face / distance
+                        if np.dot(normal, to_face_norm) < 0.3:  # Should point away
+                            valid = False
+                            break
+                    
+                    # Check which direction this normal covers
+                    for dir_name, dir_vec in directions.items():
+                        if np.dot(normal, dir_vec) > 0.7:  # Strong alignment
+                            direction_coverage[dir_name] = True
+                
+                #Require coverage in at least 4 directions for a valid box
+                covered_directions = sum(direction_coverage.values())
+                if covered_directions < 4:
+                    valid = False
 
-            healed_pairs = set()  # Track which boundary pairs have been healed
+                if not direction_coverage['up'] or not direction_coverage['down']:
+                    valid = False
+                
+                # Also check for opposing pairs
+                opposing_pairs = 0
+                for i in range(len(normals)):
+                    for j in range(i + 1, len(normals)):
+                        if np.dot(normals[i], normals[j]) < -0.7:
+                            opposing_pairs += 1
+                
+                if opposing_pairs < 2:  # Need at least 2 opposing pairs
+                    valid = False
 
-            for boundary_id, boundary in self.boundaries.items():
-                if not hasattr(boundary, 'geometry') or not boundary.geometry:
-                    continue
+                # Check that all faces have one edge within a tolerance of at least one other face edge
+                edge_proximity_valid = True
+                proximity_tolerance = 0.1  # Adjust as needed
+                
+                if edge_proximity_valid:  # Only check if previous validations passed
+                    face_has_nearby_edge = [False] * len(face_indices)
+                    
+                    for i, face_idx_i in enumerate(face_indices):
+                        face_i = faces[face_idx_i]
+                        
+                        # Get edges from face i
+                        edges_i = []
+                        edge_explorer_i = TopExp_Explorer(face_i, TopAbs_EDGE)
+                        while edge_explorer_i.More():
+                            edge_i = topods.Edge(edge_explorer_i.Current())
+                            edges_i.append(edge_i)
+                            edge_explorer_i.Next()
+                        
+                        # Check against all other faces
+                        for j, face_idx_j in enumerate(face_indices):
+                            if i == j:
+                                continue
+                                
+                            face_j = faces[face_idx_j]
+                            
+                            # Get edges from face j
+                            edges_j = []
+                            edge_explorer_j = TopExp_Explorer(face_j, TopAbs_EDGE)
+                            while edge_explorer_j.More():
+                                edge_j = topods.Edge(edge_explorer_j.Current())
+                                edges_j.append(edge_j)
+                                edge_explorer_j.Next()
+                            
+                            # Check if any edge from face i is close to any edge from face j
+                            for edge_i in edges_i:
+                                for edge_j in edges_j:
+                                    if self.edges_are_close(edge_i, edge_j, proximity_tolerance):
+                                        face_has_nearby_edge[i] = True
+                                        break
+                                if face_has_nearby_edge[i]:
+                                    break
+                            if face_has_nearby_edge[i]:
+                                break
+                    
+                    # All faces must have at least one nearby edge
+                    if not all(face_has_nearby_edge):
+                        edge_proximity_valid = False
+                
+                if not edge_proximity_valid:
+                    valid = False
+                        
+                # At the end, if valid, add to results
+                if valid and len(distances) > 0:
+                    avg_dist = np.mean(distances)
+                    dist_variance = np.var(distances) / (avg_dist**2) if avg_dist > 0 else float('inf')
+                    
+                    if dist_variance < 1.0:  # Reasonable consistency
+                        valid_group = {
+                            'face_indices': list(face_indices),
+                            'faces': [faces[i] for i in face_indices],
+                            'convergence_point': conv_point,
+                            'error': error,
+                            'distances': distances,
+                            'centers': centers,
+                            'normals': normals,
+                            'face_count': group_size
+                        }
+                        valid_groups.append(valid_group)
+        
+        return valid_groups
+    
+    def process_combinations_multiprocessing(self, faces, face_data, group_size, max_convergence_error):
+        """
+        Replace your existing loop with this multiprocessing version.
+        """
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        import multiprocessing
+        
+        total_combinations = comb(len(faces), group_size)
 
-                # find the boundaries that refer the the adjacent items to the base_item of the boundary
-                base_item_relationships = self.relationships[boundary.base_item.id]
-                adjacent_boundaries = []
-                for r in base_item_relationships:
-                    if isinstance(r, AdjacentTo):
-                        target_item = r.target
-                        # check if there is a boundary for this target item
-                        try:
-                            target_object = self.objects[target_item]
-                            if not hasattr(target_object, 'boundary_id'):
-                                continue  # Skip if no boundary_id exists
-                            target_boundary = target_object.boundary_id
-                            target_boundary = self.boundaries[target_boundary]
-                            adjacent_boundaries.append(target_boundary)
-                        except KeyError:
-                            # If no boundary exists for this target item, we can skip it
-                            continue
+        ## TODO set workers as a config
 
-                for adj_boundary in adjacent_boundaries:
-                    pair_key = tuple(sorted([boundary_id, adj_boundary.id]))
-                    if pair_key in healed_pairs:
-                        continue  # Already healed this pair
+        max_workers = min(multiprocessing.cpu_count(), 8)  # Don't overwhelm the system
+        
+        valid_groups_for_size = []
+        
+        # Submit all combinations to the process pool
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all jobs
+            future_to_combination = {}
+            for face_indices in combinations(range(len(faces)), group_size):
+                future = executor.submit(
+                    self.process_single_face_combination,
+                    face_indices,
+                    face_data,
+                    faces,
+                    group_size,
+                    max_convergence_error,
+                    self.find_convergence_point,  # Pass method as function
+                    self.edges_are_close          # Pass method as function
+                )
+                future_to_combination[future] = face_indices
+            
+            # Collect results with progress bar
+            for future in tqdm(as_completed(future_to_combination), 
+                                total=total_combinations,
+                                desc=f"Processing combinations (workers={max_workers})"):
+                try:
+                    valid_groups = future.result()
+                    valid_groups_for_size.extend(valid_groups)
+                except Exception as exc:
+                    face_indices = future_to_combination[future]
+                    print(f'Combination {face_indices} generated exception: {exc}')
+        
+        return valid_groups_for_size
 
-                    # Check current intersection status
-                    intersects = boundary.geometry.bbox_intersects(adj_boundary.geometry)
-
-                    if intersects:
-                        print(f"Boundaries {boundary_id} and {adj_boundary.id} already intersect")
-                        healed_pairs.add(pair_key)
-
-                        # Split boundary @ the intersection line between the two boundaries
-                        boundary_plane = plane_from_triangle(boundary.geometry.get_vertices()[0:3])
-                        adj_boundary_plane = plane_from_triangle(adj_boundary.geometry.get_vertices()[0:3])
-                        intersection = intersect_planes(boundary_plane, adj_boundary_plane)
-
-                        if intersection is None:
-                            continue  # skip if planes are parallel or degenerate
-
-                        # Step 2: Define local coordinate system for boundary's plane
-                        verts_3d = [np.array(v) for v in boundary.geometry.get_vertices()]
-                        origin = verts_3d[0]
-                        v1 = verts_3d[1] - origin
-                        v2 = verts_3d[2] - origin
-                        normal = np.cross(v1, v2)
-                        normal /= np.linalg.norm(normal)
-                        u = v1 / np.linalg.norm(v1)
-                        w = np.cross(normal, u)
-
-                        def project_to_2d(pt):
-                            rel = pt - origin
-                            return np.dot(rel, u), np.dot(rel, w)
-
-                        def project_to_3d(xy):
-                            return origin + xy[0] * u + xy[1] * w
-
-                        # Step 3: Project geometry to 2D
-                        from shapely.geometry import Polygon, LineString
-                        from shapely.ops import split as shapely_split
-
-                        polygon_2d = Polygon([project_to_2d(v) for v in verts_3d])
-                        line_2d = LineString([
-                            project_to_2d(intersection['point']),
-                            project_to_2d(intersection['point'] + intersection['direction'] * 1000)  # extend line
-                        ])
-
-                        if not polygon_2d.intersects(line_2d):
-                            print(f"No 2D intersection between boundary {boundary_id} and line")
-                            continue
-
-                        split_result = shapely_split(polygon_2d, line_2d)
-
-                        # Step 4: Select largest piece by area
-                        largest_poly_2d = max(split_result.geoms, key=lambda p: p.area)
-                        largest_verts_3d = [tuple(project_to_3d(pt)) for pt in largest_poly_2d.exterior.coords]
-
-
-                        faces = triangulate_polygon_3d(largest_verts_3d)  # custom or helper function you may already have
-                        boundary.geometry.mesh_data['vertices'] = largest_verts_3d
-                        boundary.geometry.mesh_data['faces'] = faces
-                        boundary.geometry._generate_brep_from_mesh()
-
-                        # Add healed pair to set
-                        self.boundaries[boundary.id] = boundary
-                        self.boundaries[adj_boundary.id] = adj_boundary
-
-                        continue
-
-
-                    # They do not intersect, so we need to extend them towards each other
-                    boundary_plane = plane_from_triangle(boundary.geometry.get_vertices()[0:3])
-                    adj_boundary_plane = plane_from_triangle(adj_boundary.geometry.get_vertices()[0:3])
-                    intersection_point = intersect_planes(boundary_plane, adj_boundary_plane)['point']
-
-                    # NEW APPROACH: Extend boundary face toward intersection, not edge collapse
-                    intersection_x, intersection_y, intersection_z = intersection_point
-
-                    # Get current boundary bounds
-                    vertices_array = np.array(boundary.geometry.get_vertices())
-                    min_x, max_x = vertices_array[:, 0].min(), vertices_array[:, 0].max()
-                    min_y, max_y = vertices_array[:, 1].min(), vertices_array[:, 1].max()
-
-                    tolerance = 0.01  # 1cm tolerance
-
-                    # Create updated vertices list
-                    vertices_list = list(boundary.geometry.get_vertices())
-
-                    print(f"Boundary {boundary_id} bounds: X[{min_x:.3f}, {max_x:.3f}], Y[{min_y:.3f}, {max_y:.3f}]")
-                    print(f"Intersection: ({intersection_x:.3f}, {intersection_y:.3f}, {intersection_z:.3f})")
-
-                    # Extend vertices toward intersection point while maintaining wall structure
-                    vertices_modified = False
-                    for i, vertex in enumerate(vertices_list):
-                        x, y, z = vertex
-                        new_vertex = [x, y, z]
-                        original_vertex = new_vertex.copy()
-
-                        # Extend in X direction if intersection is outside current bounds
-                        if intersection_x > max_x and abs(x - max_x) < tolerance:
-                            new_vertex[0] = intersection_x  # Extend max-X face
-                            vertices_modified = True
-                            print(f"Extended vertex {i} in +X direction: {vertex} -> {tuple(new_vertex)}")
-                        elif intersection_x < min_x and abs(x - min_x) < tolerance:
-                            new_vertex[0] = intersection_x  # Extend min-X face  
-                            vertices_modified = True
-                            print(f"Extended vertex {i} in -X direction: {vertex} -> {tuple(new_vertex)}")
-
-                        # Extend in Y direction if intersection is outside current bounds
-                        if intersection_y > max_y and abs(y - max_y) < tolerance:
-                            new_vertex[1] = intersection_y  # Extend max-Y face
-                            vertices_modified = True
-                            print(f"Extended vertex {i} in +Y direction: {vertex} -> {tuple(new_vertex)}")
-                        elif intersection_y < min_y and abs(y - min_y) < tolerance:
-                            new_vertex[1] = intersection_y  # Extend min-Y face
-                            vertices_modified = True
-                            print(f"Extended vertex {i} in -Y direction: {vertex} -> {tuple(new_vertex)}")
-
-                        # Extend in Z direction if intersection is outside current bounds
-                        if intersection_z > max(vertices_array[:, 2]) and abs(z - max(vertices_array[:, 2])) < tolerance:
-                            new_vertex[2] = intersection_z
-                            vertices_modified = True
-                            print(f"Extended vertex {i} in +Z direction: {vertex} -> {tuple(new_vertex)}")
-                        elif intersection_z < min(vertices_array[:, 2]) and abs(z - min(vertices_array[:, 2])) < tolerance:
-                            new_vertex[2] = intersection_z
-                            vertices_modified = True
-                            print(f"Extended vertex {i} in -Z direction: {vertex} -> {tuple(new_vertex)}")
-
-                        vertices_list[i] = tuple(new_vertex)
-
-                    if vertices_modified:
-                        print(f"Updated boundary geometry for {boundary_id} with new vertices: {vertices_list}")
-                    else:
-                        print(f"No vertices modified for {boundary_id} - intersection may be within bounds")
-
-                    # Update boundary geometry
-                    original_faces = boundary.geometry.get_faces()
-                    new_geometry = Geometry()
-                    new_geometry.mesh_data['vertices'] = vertices_list  
-                    new_geometry.mesh_data['faces'] = original_faces
-                    new_geometry._generate_brep_from_mesh()
-                    boundary.geometry = new_geometry
-
-                    # SAME APPROACH for adjacent boundary
-                    adj_vertices_array = np.array(adj_boundary.geometry.get_vertices())
-                    adj_min_x, adj_max_x = adj_vertices_array[:, 0].min(), adj_vertices_array[:, 0].max()
-                    adj_min_y, adj_max_y = adj_vertices_array[:, 1].min(), adj_vertices_array[:, 1].max()
-
-                    print(f"Adjacent boundary {adj_boundary.id} bounds: X[{adj_min_x:.3f}, {adj_max_x:.3f}], Y[{adj_min_y:.3f}, {adj_max_y:.3f}]")
-
-                    adj_vertices_list = list(adj_boundary.geometry.get_vertices())
-                    adj_vertices_modified = False
-
-                    for i, vertex in enumerate(adj_vertices_list):
-                        x, y, z = vertex
-                        new_vertex = [x, y, z]
-
-                        if intersection_x > adj_max_x and abs(x - adj_max_x) < tolerance:
-                            new_vertex[0] = intersection_x
-                            adj_vertices_modified = True
-                            print(f"Extended adjacent vertex {i} in +X direction: {vertex} -> {tuple(new_vertex)}")
-                        elif intersection_x < adj_min_x and abs(x - adj_min_x) < tolerance:
-                            new_vertex[0] = intersection_x
-                            adj_vertices_modified = True
-                            print(f"Extended adjacent vertex {i} in -X direction: {vertex} -> {tuple(new_vertex)}")
-
-                        if intersection_y > adj_max_y and abs(y - adj_max_y) < tolerance:
-                            new_vertex[1] = intersection_y
-                            adj_vertices_modified = True
-                            print(f"Extended adjacent vertex {i} in +Y direction: {vertex} -> {tuple(new_vertex)}")
-                        elif intersection_y < adj_min_y and abs(y - adj_min_y) < tolerance:
-                            new_vertex[1] = intersection_y
-                            adj_vertices_modified = True
-                            print(f"Extended adjacent vertex {i} in -Y direction: {vertex} -> {tuple(new_vertex)}")
-
-                        # Extend in Z direction if intersection is outside current bounds
-                        if intersection_z > max(adj_vertices_array[:, 2]) and abs(z - max(adj_vertices_array[:, 2])) < tolerance:
-                            new_vertex[2] = intersection_z
-                            adj_vertices_modified = True
-                            print(f"Extended adjacent vertex {i} in +Z direction: {vertex} -> {tuple(new_vertex)}")
-                        elif intersection_z < min(adj_vertices_array[:, 2]) and abs(z - min(adj_vertices_array[:, 2])) < tolerance:
-                            new_vertex[2] = intersection_z
-                            adj_vertices_modified = True
-                            print(f"Extended adjacent vertex {i} in -Z direction: {vertex} -> {tuple(new_vertex)}")
-
-                        adj_vertices_list[i] = tuple(new_vertex)
-
-                    if adj_vertices_modified:
-                        print(f"Updated adjacent boundary geometry for {adj_boundary.id} with new vertices: {adj_vertices_list}")
-                    else:
-                        print(f"No vertices modified for adjacent boundary {adj_boundary.id}")
-
-                    # Update adjacent boundary geometry
-                    adj_original_faces = adj_boundary.geometry.get_faces()
-                    new_adj_geometry = Geometry()
-                    new_adj_geometry.mesh_data['vertices'] = adj_vertices_list
-                    new_adj_geometry.mesh_data['faces'] = adj_original_faces  
-                    new_adj_geometry._generate_brep_from_mesh()
-                    adj_boundary.geometry = new_adj_geometry
-
-                    # Add healed pair to set
-                    self.boundaries[boundary.id] = boundary
-                    self.boundaries[adj_boundary.id] = adj_boundary
+    def group_faces_by_normal_convergence(self, faces, max_convergence_error=3):
 
 
+        def plot_convergence(centers, normals, convergence_point):
+            fig = plt.figure()
+            ax = fig.add_subplot(111, projection='3d')
+            for center, normal in zip(centers, normals):
+                ax.quiver(center[0], center[1], center[2], 
+                            normal[0], normal[1], normal[2], 
+                            length=0.5, normalize=True, color='b', alpha=0.5)
+                ax.scatter(center[0], center[1], center[2], color='r', s=50)
+            if convergence_point is not None:
+                ax.scatter(convergence_point[0], convergence_point[1], convergence_point[2], color='g', s=100, label='Convergence Point')
+            ax.set_xlabel('X')
+            ax.set_ylabel('Y')
+            ax.set_zlabel('Z')
+            plt.title(f'Convergence Point for Group')
+            plt.legend()
+            plt.show()
+
+        plot = True  # Set to True to visualize convergence
+        # Get face data
+        face_data = []
+        for i, face in enumerate(faces):
+            center, normal, neg_normal = self.get_face_normal_and_center(face)
+            face_data.append((center, normal, neg_normal, i))
+        
+        all_valid_groups = []
+        # used_faces = set()
+        
+        # Try different group sizes, starting with larger groups
+        for group_size in range(min(6, len(faces)), 5, -1):
+            # if len(used_faces) >= len(faces) - 2:
+            #     break
+            print('Testing group size:', group_size)
+            valid_groups_for_size = []
+            
+            total_combinations = comb(len(faces), group_size)
+
+            valid_groups_for_size = self.process_combinations_multiprocessing(
+                faces, face_data, group_size, max_convergence_error
+            )
+            
+            # Add all valid groups for this size
+            for group in valid_groups_for_size:
+                # Only add if faces aren't already used
+                # if not any(face_idx in used_faces for face_idx in group['face_indices']):
+                all_valid_groups.append(group)
+                # used_faces.update(group['face_indices'])
+        
+        return all_valid_groups
+
+    # Main function
+    def find_enclosed_shape_groups(self, faces):
+        """Find groups of faces that likely form enclosed shapes"""
+
+        groups = self.group_faces_by_normal_convergence(faces)
+
+        # Sort by lower error first and then by larger face count
+
+
+        groups.sort(key=lambda x: (x['error'], -x['face_count']))
+
+
+        min_error = min([g['error'] for g in groups])
+        max_face_count = max([g['face_count'] for g in groups])
+
+        # Select groups with minimum error and maximum face count
+        groups = [g for g in groups if g['error'] == min_error and g['face_count'] == max_face_count]
+
+        
+        
+        print(f"Found {len(groups)} potential enclosed shapes:")
+        for i, group in enumerate(groups):
+            print(f"  Group {i+1}: {len(group['faces'])} faces")
+            print(f"    Convergence error: {group['error']:.4f}")
+            print(f"    Face indices: {group['face_indices']}")
+            print(f"    Convergence point: {group['convergence_point']}")
+        
+        return groups
+
+    def edges_are_close(self, edge1, edge2, tolerance):
+        """Check if two edges have points within tolerance distance"""
+        
+        # Sample points along each edge
+        def sample_edge_points(edge, num_samples=10):
+            points = []
+            curve, first_param, last_param = BRep_Tool.Curve(edge)
+            if curve:
+                for i in range(num_samples):
+                    param = first_param + i * (last_param - first_param) / (num_samples - 1)
+                    point = curve.Value(param)
+                    points.append(np.array([point.X(), point.Y(), point.Z()]))
+            return points
+        
+        points1 = sample_edge_points(edge1)
+        points2 = sample_edge_points(edge2)
+        
+        # Check if any point from edge1 is close to any point from edge2
+        for p1 in points1:
+            for p2 in points2:
+                if np.linalg.norm(p1 - p2) < tolerance:
+                    return True
+        return False
+
+    def _update_boundary_geometries(self, boundaries, healed_faces):
+        """Update boundary geometries with improved vertex ordering"""
+        from OCC.Core.TopExp import TopExp_Explorer
+        from OCC.Core.TopAbs import TopAbs_VERTEX, TopAbs_EDGE
+        from OCC.Core.BRep import BRep_Tool
+        from OCC.Core.TopTools import TopTools_ListOfShape
+        from OCC.Core.ShapeAnalysis import ShapeAnalysis_WireOrder
+        
+        for i, boundary in enumerate(boundaries):
+            if i < len(healed_faces):
+                try:
+                    # Extract vertices in proper order by following edges
+                    vertices = self._extract_ordered_vertices(healed_faces[i])
+                    
+                    if len(vertices) >= 3:
+                        # Create triangulated faces for mesh data
+                        faces = []
+                        for j in range(1, len(vertices) - 1):
+                            faces.append((0, j, j + 1))
+                        
+                        boundary.geometry.mesh_data["vertices"] = vertices
+                        boundary.geometry.mesh_data["faces"] = faces
+                        boundary.geometry.oc_geometry = healed_faces[i]
+                        
+                except Exception as e:
+                    print(f"Error updating boundary {i}: {e}")
+
+    def _extract_ordered_vertices(self, face):
+        """Extract vertices from face in proper order following wire edges"""
+        from OCC.Core.TopExp import TopExp_Explorer
+        from OCC.Core.TopAbs import TopAbs_WIRE, TopAbs_EDGE, TopAbs_VERTEX
+        from OCC.Core.BRep import BRep_Tool
+        from OCC.Core import TopoDS
+        
+        vertices = []
+        
+        # Get the outer wire of the face
+        wire_explorer = TopExp_Explorer(face, TopAbs_WIRE)
+        if wire_explorer.More():
+            wire = wire_explorer.Current()
+            
+            # Follow edges in order
+            edge_explorer = TopExp_Explorer(wire, TopAbs_EDGE)
+            while edge_explorer.More():
+                edge = edge_explorer.Current()
+                
+                # Get vertices of this edge
+                vertex_explorer = TopExp_Explorer(edge, TopAbs_VERTEX)
+                edge_vertices = []
+                while vertex_explorer.More():
+                    vertex = vertex_explorer.Current()
+                    point = BRep_Tool.Pnt(vertex)
+                    edge_vertices.append((point.X(), point.Y(), point.Z()))
+                    vertex_explorer.Next()
+                
+                # Add first vertex if this is the first edge, otherwise add second
+                if len(vertices) == 0 and len(edge_vertices) > 0:
+                    vertices.append(edge_vertices[0])
+                if len(edge_vertices) > 1:
+                    vertices.append(edge_vertices[1])
+                
+                edge_explorer.Next()
+        
+        return vertices
+
+    def extract_healed_faces(self, healed_shape):
+        """Extract individual faces from healed shape with validation"""
+        from OCC.Core.TopExp import TopExp_Explorer
+        from OCC.Core.TopAbs import TopAbs_FACE
+        from OCC.Core.BRepCheck import BRepCheck_Analyzer
+        
+        faces = []
+        face_explorer = TopExp_Explorer(healed_shape, TopAbs_FACE)
+        
+        while face_explorer.More():
+            face = face_explorer.Current()
+            
+            # Validate face before adding
+            analyzer = BRepCheck_Analyzer(face)
+            if analyzer.IsValid():
+                faces.append(face)
+            else:
+                print("Warning: Invalid face detected and skipped")
+            
+            face_explorer.Next()
+        
+        return faces
 
 
 
@@ -1272,7 +1443,8 @@ class Model:
                     'centroid_z': wall.get_centroid().z
                 }
 
-                self.building_graph.add_node('Boundary', features=features)
+
+                self.building_graph.add_node('Boundary', node_id=boundary.id, features=features)
 
                 rel = Creates(wall.id, boundary.id)
                 boundary.relationships.append(rel)
@@ -1377,7 +1549,7 @@ class Model:
                 self.building_graph.add_edge(wall.id, boundary.id, "OBJECT_CREATES_BOUNDARY", from_label='Object', to_label='Boundary')
 
         if dimentions == '3d':
-            for deck in decks_connected_to_walls.values():
+            for deck in deck_objects:
                 # get the deck center plane geometry
                 deck_geometry = deck.get_centerplane_geometry()
                 # create a boundary for the deck
@@ -1412,9 +1584,9 @@ class Model:
                     'type': boundary.type,
                     'is_access_boundary': boundary.is_access_boundary,
                     'is_visual_boundary': boundary.is_visual_boundary,
-                    'centroid_x': wall.get_centroid().x,
-                    'centroid_y': wall.get_centroid().y,
-                    'centroid_z': wall.get_centroid().z
+                    'centroid_x': deck.get_centroid().x,
+                    'centroid_y': deck.get_centroid().y,
+                    'centroid_z': deck.get_centroid().z
                 }
 
                 self.building_graph.add_node('Boundary', node_id=boundary.id, features=features)
@@ -1425,11 +1597,14 @@ class Model:
                 self.relationships[boundary.id].append(rel)
                 self.building_graph.add_edge(deck.id, boundary.id, "OBJECT_CREATES_BOUNDARY", from_label='Object', to_label='Boundary')
                 # Don't process decks
-                pass
+                
 
 
         # Now lets heal the boundaries by finding intersections and extending them
-        self.heal_boundaries(dimentions=dimentions)
+        # self.heal_boundaries(dimentions=dimentions)
+        occ_faces = self.heal_boundaries(tolerance=25.0)
+
+        # test_healing_validation(self.boundaries, occ_faces)
 
         # Now lets create the adjacency relationships between boundaries
         for boundary_id, boundary in self.boundaries.items():
@@ -1576,6 +1751,9 @@ class Model:
                     features = {
                         'name': space.name,
                         'volume': space.geometry.compute_volume(),
+                        'centroid_x': space.geometry.get_centroid().x,
+                        'centroid_y': space.geometry.get_centroid().y,
+                        'centroid_z': space.geometry.get_centroid().z
                     }
                     self.building_graph.add_node('Space', node_id=space.id, features=features)
 
@@ -1623,7 +1801,7 @@ class Model:
                         e_v = Vertex.ByCoordinates(x=edge.coords[1][0], y=edge.coords[1][1], z=edge.coords[1][2])
                         topologic_edges.append(Edge.ByStartVertexEndVertex(s_v, e_v))
 
-                    face = Face.ByEdges(topologic_edges, tolerance=0.01)
+                    face = Face.ByEdges(topologic_edges, tolerance=0.01, silent=True)
                     if face:
                         space_height = max([boundary.height for boundary in cycle_boundaries])
                         cell = Cell.ByThickenedFace(face, thickness=space_height)
@@ -1649,7 +1827,11 @@ class Model:
                         features = {
                             'name': space.name,
                             'volume': space.geometry.compute_volume(),
-                        }
+                            'centroid_x': space.geometry.get_centroid().x,
+                            'centroid_y': space.geometry.get_centroid().y,
+                            'centroid_z': space.geometry.get_centroid().z
+                        }  
+
                         self.building_graph.add_node('Space', node_id=space.id, features=features)
 
                         # add relationship between bounds and spaces
@@ -1678,6 +1860,21 @@ class Model:
                 except Exception as e:
                     return (combo, float("inf"), None)  # error path
 
+            def occ_to_topologic(occ_shape):
+                from OCC.Core.BRepTools import breptools
+                # generate temp file
+                temp_path = f'temp_{uuid4()}.brep'
+                # write occ to brep file with oi string
+                breptools.Write(boundary.geometry.oc_geometry, temp_path)
+
+                topology = Topology.ByBREPPath(temp_path)
+
+                # Clean up the temp file
+                os.remove(temp_path)
+
+                # Return the topology
+                return topology
+            
             # TODO idea: How about we create topologic face objects from every boundary geometry and then we try all combinations of 4+ 
             # and find those that create a closed volume?
 
@@ -1686,9 +1883,11 @@ class Model:
             for boundary in self.boundaries.values():
                 if not hasattr(boundary, 'geometry') or not boundary.geometry:
                     continue
-                # Create a topologic face from the boundary geometry
-                topologic_vertices = [Vertex.ByCoordinates(x=v[0], y=v[1], z=v[2]) for v in boundary.geometry.get_vertices()]
-                topologic_face = Face.ByVertices(topologic_vertices, tolerance=0.01)
+                # # Create a topologic face from the boundary geometry
+                # topologic_vertices = [Vertex.ByCoordinates(x=v[0], y=v[1], z=v[2]) for v in boundary.geometry.get_vertices()]
+                # topologic_face = Face.ByVertices(topologic_vertices, tolerance=0.01, silent=True)
+
+                topologic_face = occ_to_topologic(boundary.geometry.oc_geometry)
                 if topologic_face:
                     face_dict = Topology.Dictionary(topologic_face)
                     face_dict = Dictionary.SetValueAtKey(face_dict, 'boundary_id', boundary.id)
@@ -1719,11 +1918,11 @@ class Model:
                 magnitude = np.linalg.norm(net)
                 magnitudes.append(magnitude)
                 if magnitude > 2:
-                    print(f"Combination {combo} does not form a closed volume, skipping...")
+                    # print(f"Combination {combo} does not form a closed volume, skipping...")
                     continue
 
 
-                cell = Cell.ByFaces(list(combo), tolerance=0.01)
+                cell = Cell.ByFaces(list(combo), tolerance=1.0, silent=True)
 
                 if cell:
                     # Create geometry from the cell
@@ -1774,6 +1973,9 @@ class Model:
                     features = {
                         'name': space.name,
                         'volume': space.geometry.compute_volume(),
+                        'centroid_x': space.geometry.get_centroid().x,
+                        'centroid_y': space.geometry.get_centroid().y,
+                        'centroid_z': space.geometry.get_centroid().z
                     }  
                     self.building_graph.add_node('Space', node_id=space.id, features=features)
 
@@ -2387,6 +2589,178 @@ class Model:
 
         fig.show()
 
+    def show_building_graph(self, color_by='type'):
+        """
+        Display the building graph (Kuzu graph) using Plotly.
+        Args:
+            color_by (str): Node attribute to color nodes by. Default is 'type'.
+        """
+        # Check if building graph exists
+        if not hasattr(self, 'building_graph'):
+            print("No building graph found in model.")
+            return
+
+        # Get node positions and attributes
+        query = "MATCH (n) RETURN DISTINCT n"
+        result = self.building_graph.query(query)
+        pos = {}
+        
+        # Initialize Plotly figure
+        fig = go.Figure()
+
+        # get all nodes from the results
+        if not result:
+            print("No nodes found in the building graph.")
+            return
+        
+        if result.has_next():
+            nodes = []
+            while result.has_next():
+                row = result.get_next()
+                nodes.append(row)
+            
+        else:
+            return
+        
+
+        for node in nodes:
+            node_id = node[0]['id']
+            if 'centroid_x' in node[0] and 'centroid_y' in node[0] and 'centroid_z' in node[0]:
+                pos[node_id] = (
+                    node[0]['centroid_x'],
+                    node[0]['centroid_y'],
+                    node[0]['centroid_z']
+                )
+            else:
+                pos[node_id] = (0, 0, 0)
+
+            # Get node attributes for coloring
+            if color_by in node[0]:
+                node[0]['color'] = node[0][color_by]
+            else:
+                node[0]['color'] = 'default'
+
+        # Create a NetworkX graph from the building graph
+        G = nx.Graph()
+        for node in nodes:
+            node_id = node[0]['id']
+            G.add_node(node_id, **node[0])
+
+        # Add edges
+        edges_result = self.building_graph.query("MATCH (n)-[r]->(m) RETURN n.id AS source, m.id AS target, r")
+        if edges_result.has_next():
+            edges = []
+            while edges_result.has_next():
+                row = edges_result.get_next()
+                edges.append(row)
+            
+        else:
+            return
+        
+        for edge in edges:
+            source = edge[0]
+            target = edge[1]
+            G.add_edge(source, target, relationship=edge[2]['_label'])
+
+        # Create color mapping for nodes
+        unique_colors = set(nx.get_node_attributes(G, 'color').values())
+        color_map = {color: random_color(seed=hash(color) % 100) for color in unique_colors}
+
+                # Create color mapping for nodes
+        unique_labels = set(nx.get_node_attributes(G, '_label').values())
+        color_map = {label: random_color(seed=hash(label) % 100) for label in unique_labels}
+
+        # Create color mapping for edge types
+        unique_edge_types = set(nx.get_edge_attributes(G, 'relationship').values())
+        edge_color_map = {edge_type: random_color(seed=hash(edge_type) % 100) for edge_type in unique_edge_types}
+        
+        # Define edge styles for different relationship types
+        edge_styles = {
+            'contains': dict(width=3, dash='solid'),
+            'connects_to': dict(width=2, dash='dash'),
+            'adjacent_to': dict(width=2, dash='dot'),
+            'supports': dict(width=4, dash='solid'),
+            'flows_through': dict(width=2, dash='dashdot'),
+            'part_of': dict(width=2, dash='solid'),
+            'default': dict(width=2, dash='solid')
+        }
+
+        # --- Edge traces grouped by relationship type ---
+        for edge_type in unique_edge_types:
+            edge_x, edge_y, edge_z, edge_text = [], [], [], []
+            
+            for u, v, data in G.edges(data=True):
+                if data.get("relationship") == edge_type and u in pos and v in pos:
+                    x0, y0, z0 = pos[u]
+                    x1, y1, z1 = pos[v]
+                    edge_x += [x0, x1, None]
+                    edge_y += [y0, y1, None]
+                    edge_z += [z0, z1, None]
+                    edge_text.append(f"{u} → {v}<br>{edge_type}")
+
+            if edge_x:  # Only add trace if there are edges of this type
+                style = edge_styles.get(edge_type, edge_styles['default'])
+                
+                edge_trace = go.Scatter3d(
+                    x=edge_x, y=edge_y, z=edge_z,
+                    mode='lines',
+                    line=dict(
+                        color=edge_color_map[edge_type], 
+                        width=style['width'],
+                        dash=style['dash']
+                    ),
+                    hoverinfo='text',
+                    text=edge_text,
+                    name=f'Edge: {edge_type}',
+                    # legendgroup='edges'
+                )
+                
+                fig.add_trace(edge_trace)
+
+        # --- Node traces grouped by _label ---
+        for label in unique_labels:
+            node_x, node_y, node_z, text = [], [], [], []
+            for node, (x, y, z) in pos.items():
+                if G.nodes[node].get('_label') == label:
+                    node_x.append(x)
+                    node_y.append(y)
+                    node_z.append(z)
+                    text.append(f"{node}<br>{label}<br>x={x}<br>y={y}<br>z={z}")
+            
+            fig.add_trace(go.Scatter3d(
+                x=node_x, y=node_y, z=node_z,
+                mode='markers+text',
+                marker=dict(size=6, color=color_map[label], opacity=0.8),
+                text=text,
+                textposition="top center",
+                textfont=dict(size=10, color="black"),
+                hoverinfo='text',
+                name=label
+            ))
+
+           
+
+        # Set layout
+        fig.update_layout(
+            title='Building Graph (3D)',
+            scene=dict(
+                xaxis_title='X',
+                yaxis_title='Y',
+                zaxis_title='Z',
+                aspectmode='data'
+            ),
+            showlegend=True,
+            legend=dict(
+                yanchor="top",
+                y=0.99,
+                xanchor="left",
+                x=0.01
+            )
+        )
+
+        fig.show()
+
+
     def get_bounding_box(self):
         """
         Get the bounding box of the model by combining all objects, components, and elements.
@@ -2438,7 +2812,7 @@ class Model:
         """
         from openai import OpenAI
         
-        client = OpenAI(api_key="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")
+        client = OpenAI(api_key="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")
 
         # Step 1: Get schema context
         node_types = self.building_graph.get_node_types_to_string()
