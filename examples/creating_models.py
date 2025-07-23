@@ -201,26 +201,16 @@ if __name__ == "__main__":
     objects = [wall_long_1, wall_long_2, wall_short_1, wall_short_2,
                deck, deck2, wall_long_3, wall_long_4, wall_short_3, created_door, deck_roof, deck2_roof]
     
-    # Instantiate the model
-    # create model name
+    # Create the model from objects
     model_name = f"Example Building Model {uuid4().hex[:8].upper()}"
     print(f"Creating model: {model_name}")
     model = Model.from_objects(model_name, objects)
-    
-    # Print ojects and locations
-    print("Objects in the model:")
-    for obj_id in model.objects:
-        obj = model.objects[obj_id]
-        
-        print(f"- {obj.name} (ID: {obj.id}) at {obj.get_centroid().x}, {obj.get_centroid().y}, {obj.get_centroid().z}")
 
-    
-    # explore the model
-    model.show_objects()
+    # view the spaces + objects
     model.show_spaces()
-    model.show_spaces_graph()
+    model.show_objects()
+
+    # view the full building graph
     model.show_building_graph()
 
-
-    model.show(color_by_class=True, show_building_graph=False)
 
