@@ -1,0 +1,33 @@
+name: hierarchical
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  # Core scientific packages (prefer conda)
+  - scipy
+  - numpy
+  - matplotlib
+  - networkx
+  - shapely
+  - ipython
+  - nbformat
+  
+  # Visualization packages
+  - plotly
+  
+  # Geometry packages available via conda
+  - trimesh
+  - pythonocc-core=7.8.1
+  
+  # Development tools
+  - pip
+  - jupyter
+  - notebook
+  
+  # Packages only available via pip
+  - pip:
+    - topologicpy
+    - kuzu
+    - openai
+    - -e .  # Install hierarchical package in editable mode

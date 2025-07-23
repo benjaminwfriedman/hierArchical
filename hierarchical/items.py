@@ -1223,7 +1223,7 @@ class Door(Object):
         return super(Door, cls).from_components(
             components=components,
             name=name,
-            type="door",
+            type="Door",
             **kwargs
         )
     @classmethod
