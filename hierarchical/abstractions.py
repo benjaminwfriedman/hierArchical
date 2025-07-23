@@ -8,8 +8,7 @@ import networkx as nx
 import numpy as np
 from typing import List, Tuple, Dict, Optional
 from dataclasses import dataclass, field
-from copy import deepcopy
-from hierarchical.utils import generate_id, plot_shapely_geometries, plot_topologic_objects, plot_items, random_color, plot_opencascade_shapes
+from hierarchical.utils import generate_id, random_color
 import matplotlib.pyplot as plt
 from topologicpy.Edge import Edge
 from topologicpy.Face import Face
@@ -26,6 +25,7 @@ from OCC.Core.TopAbs import TopAbs_VERTEX, TopAbs_EDGE
 from OCC.Core.TopoDS import topods
 from OCC.Core import TopoDS
 from math import comb
+from dotenv import load_dotenv
 
 
 from itertools import combinations
@@ -38,58 +38,15 @@ from OCC.Core.BRepTools import breptools
 import os
 import numpy as np
 
-
-
-client = OpenAI(api_key="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")
-
-
-
-# Abstractions are things like spaces and zones. They are not elements but are 
-# defined by elements. They are used to group elements together in ways that are meaningful 
-# and speak to how people experience the building. For example, a room is a space that is defined by
-# walls, floors, and ceilings. (Maybe boundary abstractions)
-
-# Idea 1: We create boundaries out of our walls and floors -> We make spaces out of boundaries?
-
-# Idea 2: We create spaces out of our walls and floors -> We make boundaries out of spaces?
-
 import numpy as np
 from scipy.spatial import Delaunay
 
-def triangulate_polygon_3d(vertices_3d, normal=None):
-    """
-    Triangulate a planar polygon defined by 3D vertices.
+# Load environment variables
+load_dotenv()
 
-    Args:
-        vertices_3d (list of tuple): List of 3D points (x, y, z).
-        normal (np.array): Optional normal vector of the polygon plane. If not given, it's computed.
+OPEN_AI_API_KEY = os.getenv("OPEN_AI_API_KEY")
 
-    Returns:
-        list of tuple: Face indices (i, j, k) as triangles into the input vertex list.
-    """
-    vertices_3d = np.array(vertices_3d)
-
-    # Compute normal if not provided
-    if normal is None:
-        v1 = vertices_3d[1] - vertices_3d[0]
-        v2 = vertices_3d[2] - vertices_3d[0]
-        normal = np.cross(v1, v2)
-        normal = normal / np.linalg.norm(normal)
-
-    # Create 2D projection basis (u, v)
-    u = vertices_3d[1] - vertices_3d[0]
-    u = u / np.linalg.norm(u)
-    v = np.cross(normal, u)
-
-    def project_to_2d(p):
-        rel = p - vertices_3d[0]
-        return [np.dot(rel, u), np.dot(rel, v)]
-
-    points_2d = np.array([project_to_2d(p) for p in vertices_3d])
-
-    # Triangulate in 2D
-    delaunay = Delaunay(points_2d)
-    return [tuple(triangle) for triangle in delaunay.simplices]
+client = OpenAI(api_key=OPEN_AI_API_KEY)
 
 
 @dataclass
@@ -1129,10 +1086,8 @@ class Model:
         
         total_combinations = comb(len(faces), group_size)
 
-        ## TODO set workers as a config
+        max_workers = min(multiprocessing.cpu_count(), int(os.getenv("WORKERS", 4)))  # Don't overwhelm the system
 
-        max_workers = min(multiprocessing.cpu_count(), 8)  # Don't overwhelm the system
-        
         valid_groups_for_size = []
         
         # Submit all combinations to the process pool
@@ -1193,7 +1148,6 @@ class Model:
             face_data.append((center, normal, neg_normal, i))
         
         all_valid_groups = []
-        # used_faces = set()
         
         # Try different group sizes, starting with larger groups
         for group_size in range(min(6, len(faces)), 5, -1):
@@ -2811,8 +2765,8 @@ class Model:
             str: The answer generated from the graph query result.
         """
         from openai import OpenAI
-        
-        client = OpenAI(api_key="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")
+
+        client = OpenAI(api_key=OPEN_AI_API_KEY)
 
         # Step 1: Get schema context
         node_types = self.building_graph.get_node_types_to_string()
