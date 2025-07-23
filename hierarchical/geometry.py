@@ -57,6 +57,9 @@ class Geometry:
     brep_data: Dict[str, Any] = field(default_factory=dict)
     # Example keys: {"surfaces": [...], "edges": [...], "vertices": [...]}
     
+    # open cascade geometry object
+    oc_geometry: Any = None  # Placeholder for OpenCascade geometry object
+
     # Origin point of the geometry
     origin: Vector3D = field(default_factory=Vector3D)
     
