@@ -39,20 +39,16 @@ The model is instantiated, geometrically reasoned over, and then used to:
     # Using the objects from creating_objects.py + creating_relationships.py
 
     # Create the model from objects
-    model = Model.from_objects(objects)
-
-    # create adjacency relationships in the model
-    model.create_adjacency_relationships(tolerance=0.001)
-
-    # infer the boundary objects created by object arangement
-    model.infer_bounds()
-
-    # infer the spaces created by boundaries
-    model.infer_spaces()
+    model_name = f"Example Building Model {uuid4().hex[:8].upper()}"
+    print(f"Creating model: {model_name}")
+    model = Model.from_objects(model_name, objects)
 
     # view the spaces + objects
     model.show_spaces()
     model.show_objects()
+
+    # view the full building graph
+    model.show_building_graph()
 ```
 
 ### Object View
@@ -63,31 +59,34 @@ The model is instantiated, geometrically reasoned over, and then used to:
 ![Model Spaces](collateral/SimpleModelInferredSpaces.png)
 
 
+### Graph View
+![Building Graph](collateral/buildingGraph.png)
+
 ### Benefits Realized
 1. Spatial Awareness
 The system understands how walls define spaces. Walls are no longer just shapes; they become semantic and spatial boundaries.
-2. Topological Reasoning
+2. Topological and Geometric Reasoning
 Using adjacency and geometric alignment, the model infers zones and rooms. This enables:
 
-Space detection
-Room volume computation
-Adjacency graphs for spatial optimization
+    * Space detection
+    * Room volume computation
+    * Adjacency graphs for spatial optimization
 
 3. Semantic Layers
 Objects are labeled and typed. A door isn't just a mesh—it's a Door object with a frame, a sheet, swing direction, and spatial context.
 4. Full Queryability
 Because each item (element, component, object, etc.) exists in a coherent, semantic graph:
 
-You can ask "What is this wall made of?"
-You can query: "Which beams support this deck?"
-You can reason: "Which walls define the boundary of this space?"
+    * You can ask "What is this wall made of?"
+    * You can query: "Which beams support this deck?"
+    * You can reason: "Which walls define the boundary of this space?"
 
 5. AI-Ready Representation
 This structure is primed for machine learning and automation:
 
-Spaces can be labeled
-Models can be generated
-Systems can be simulated
+* Spaces can be labeled
+* Models can be generated
+* Systems can be simulated
 
 ### Conclusion
 The combination of code, data structure, and abstraction demonstrates how architectural models can evolve from inert 3D files to intelligent systems.

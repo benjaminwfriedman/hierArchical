@@ -5,7 +5,6 @@ from hierarchical.relationships import Contains, IsPartOf
 from hierarchical.units import UnitSystem
 from hierarchical.abstractions import Model
 import numpy as np
-from uuid import uuid4
 
 if __name__ == "__main__":
     # --- Dimensions ---
@@ -201,16 +200,14 @@ if __name__ == "__main__":
     objects = [wall_long_1, wall_long_2, wall_short_1, wall_short_2,
                deck, deck2, wall_long_3, wall_long_4, wall_short_3, created_door, deck_roof, deck2_roof]
     
-    # Create the model from objects
-    model_name = f"Example Building Model {uuid4().hex[:8].upper()}"
-    print(f"Creating model: {model_name}")
-    model = Model.from_objects(model_name, objects)
+    # Instantiate the model
+    model = Model.from_objects(objects)
+    
 
-    # view the spaces + objects
-    model.show_spaces()
-    model.show_objects()
+    print("Q: What spaces are in the model?")
+    print(model.ask("What spaces are in the model?"))
 
-    # view the full building graph
-    model.show_building_graph()
-
+    print("Q: What spaces are next to Space 1?")
+    print(model.ask("What spaces are next to Space 1?"))
+  
 
