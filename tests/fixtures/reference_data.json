@@ -1,0 +1,229 @@
+{
+  "geometric_tolerances": {
+    "coordinate_precision": 1e-6,
+    "volume_precision": 1e-10,
+    "angle_precision": 1e-8,
+    "adjacency_tolerance": 0.1
+  },
+  
+  "unit_conversions": {
+    "length": {
+      "meter_to_foot": 3.28084,
+      "meter_to_inch": 39.3701,
+      "meter_to_millimeter": 1000.0,
+      "foot_to_meter": 0.3048,
+      "inch_to_meter": 0.0254,
+      "millimeter_to_meter": 0.001
+    },
+    "area": {
+      "square_meter_to_square_foot": 10.7639,
+      "square_foot_to_square_meter": 0.092903
+    },
+    "volume": {
+      "cubic_meter_to_cubic_foot": 35.3147,
+      "cubic_foot_to_cubic_meter": 0.0283168
+    }
+  },
+  
+  "material_properties": {
+    "concrete": {
+      "density_kg_m3": 2400,
+      "thermal_conductivity": 1.7,
+      "fire_rating_hours": 4,
+      "compressive_strength_mpa": 30
+    },
+    "steel": {
+      "density_kg_m3": 7850,
+      "thermal_conductivity": 50,
+      "fire_rating_hours": 2,
+      "yield_strength_mpa": 250
+    },
+    "wood": {
+      "density_kg_m3": 600,
+      "thermal_conductivity": 0.12,
+      "fire_rating_hours": 1,
+      "species": "douglas_fir"
+    },
+    "aluminum": {
+      "density_kg_m3": 2700,
+      "thermal_conductivity": 237,
+      "fire_rating_hours": 0.5,
+      "alloy": "6061-T6"
+    }
+  },
+  
+  "geometric_calculations": {
+    "unit_cube": {
+      "volume": 1.0,
+      "surface_area": 6.0,
+      "centroid": [0.5, 0.5, 0.5],
+      "bbox_min": [0.0, 0.0, 0.0],
+      "bbox_max": [1.0, 1.0, 1.0]
+    },
+    "rectangular_prism_2x3x1": {
+      "volume": 6.0,
+      "surface_area": 22.0,
+      "centroid": [1.0, 1.5, 0.5],
+      "bbox_min": [0.0, 0.0, 0.0],
+      "bbox_max": [2.0, 3.0, 1.0]
+    },
+    "tetrahedron": {
+      "volume": 0.166667,
+      "surface_area": 2.366,
+      "centroid": [0.5, 0.375, 0.25],
+      "bbox_min": [0.0, 0.0, 0.0],
+      "bbox_max": [1.0, 1.0, 1.0]
+    }
+  },
+  
+  "transformation_invariants": {
+    "translation": {
+      "preserves": ["volume", "surface_area", "shape", "relative_distances"],
+      "changes": ["centroid", "bbox"]
+    },
+    "rotation": {
+      "preserves": ["volume", "surface_area", "shape", "distance_from_origin"],
+      "changes": ["orientation", "bbox"]
+    },
+    "uniform_scaling": {
+      "preserves": ["shape_ratios", "angles"],
+      "volume_scaling": "cubic",
+      "area_scaling": "quadratic",
+      "length_scaling": "linear"
+    }
+  },
+  
+  "relationship_types": {
+    "contains": {
+      "description": "One item fully contains another",
+      "bidirectional": false,
+      "inverse": "is_contained_by"
+    },
+    "adjacent_to": {
+      "description": "Items touch or are very close",
+      "bidirectional": true,
+      "tolerance_dependent": true
+    },
+    "embedded_in": {
+      "description": "One item is embedded within another",
+      "bidirectional": false,
+      "inverse": "embeds"
+    },
+    "passes_through": {
+      "description": "One item passes through another",
+      "bidirectional": false,
+      "inverse": "has_passing_through"
+    },
+    "supports": {
+      "description": "One item structurally supports another",
+      "bidirectional": false,
+      "inverse": "supported_by"
+    }
+  },
+  
+  "test_scenarios": {
+    "wall_analysis": {
+      "standard_wall": {
+        "dimensions": {"length": 10.0, "height": 3.0, "thickness": 0.2},
+        "materials": {"concrete": 0.8, "insulation": 0.2},
+        "expected_volume": 6.0,
+        "expected_surface_area": 66.8
+      },
+      "wall_with_opening": {
+        "wall_dimensions": {"length": 10.0, "height": 3.0, "thickness": 0.2},
+        "opening_dimensions": {"width": 0.9, "height": 2.1},
+        "expected_remaining_volume": 4.122
+      }
+    },
+    
+    "spatial_relationships": {
+      "intersecting_walls": {
+        "wall1": {"start": [0, 0, 0], "end": [10, 0, 0], "thickness": 0.2},
+        "wall2": {"start": [5, -1, 0], "end": [5, 1, 0], "thickness": 0.2},
+        "expected_relationship": "intersects",
+        "intersection_volume": 0.12
+      },
+      "adjacent_walls": {
+        "wall1": {"start": [0, 0, 0], "end": [10, 0, 0], "thickness": 0.2},
+        "wall2": {"start": [10, 0, 0], "end": [10, 5, 0], "thickness": 0.2},
+        "expected_relationship": "adjacent",
+        "shared_edge_length": 3.0
+      }
+    }
+  },
+  
+  "property_test_parameters": {
+    "coordinate_bounds": {
+      "min": -1000.0,
+      "max": 1000.0
+    },
+    "dimension_bounds": {
+      "min": 0.001,
+      "max": 1000.0
+    },
+    "angle_bounds": {
+      "min": 0.0,
+      "max": 6.283185307179586
+    },
+    "scale_bounds": {
+      "min": 0.1,
+      "max": 10.0
+    },
+    "examples_per_property": 1000,
+    "max_examples": 5000
+  },
+  
+  "ifc_test_data": {
+    "sample_door_properties": {
+      "name": "Standard Door",
+      "type": "IfcDoor",
+      "swing_direction": "single_swing_left",
+      "panel_position": "left",
+      "material": "wood",
+      "dimensions": {"width": 0.9, "height": 2.1, "thickness": 0.04}
+    },
+    "sample_wall_properties": {
+      "name": "Exterior Wall",
+      "type": "IfcWall",
+      "material_layers": ["concrete", "insulation", "drywall"],
+      "total_thickness": 0.25,
+      "fire_rating": "2hr"
+    }
+  },
+  
+  "performance_benchmarks": {
+    "small_model": {
+      "max_elements": 100,
+      "max_execution_time_ms": 100
+    },
+    "medium_model": {
+      "max_elements": 1000,
+      "max_execution_time_ms": 1000
+    },
+    "large_model": {
+      "max_elements": 10000,
+      "max_execution_time_ms": 10000
+    }
+  },
+  
+  "error_conditions": {
+    "invalid_geometries": [
+      "empty_vertex_list",
+      "empty_face_list",
+      "invalid_face_indices",
+      "duplicate_vertices",
+      "degenerate_faces"
+    ],
+    "invalid_materials": [
+      "empty_material_name",
+      "negative_volume",
+      "invalid_percentage"
+    ],
+    "invalid_transformations": [
+      "singular_matrix",
+      "non_square_matrix",
+      "infinite_values",
+      "nan_values"
+    ]
+  }
+}

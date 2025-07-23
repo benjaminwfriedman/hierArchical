@@ -31,4 +31,9 @@ dependencies:
     - topologicpy
     - kuzu
     - openai
-    - -e .  # Install hierarchical package in editable mode
+    - pytest
+    - pytest-cov
+    - pytest-mock
+    - hypothesis
+    - pytest-benchmark
+    -e .  # Install hierarchical package in editable mode
