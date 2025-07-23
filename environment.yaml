@@ -27,6 +27,7 @@ dependencies:
   
   # Packages only available via pip
   - pip:
+    - python-dotenv
     - topologicpy
     - kuzu
     - openai
