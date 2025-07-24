@@ -363,7 +363,7 @@ class Geometry:
             return None
 
     @classmethod
-    def from_obj(cls, obj_path: Union[str, Path]) -> None:
+    def from_obj(cls, obj_path: Union[str, Path]) -> "Geometry":
         """
         Create geometry from an OBJ file
         
@@ -449,7 +449,7 @@ class Geometry:
 
 
     @classmethod
-    def from_stl(cls, stl_path: Union[str, Path]) -> None:
+    def from_stl(cls, stl_path: Union[str, Path]) -> "Geometry":
         """
         Create mesh data from an STL file
         
@@ -470,7 +470,7 @@ class Geometry:
         return geom
 
     @classmethod
-    def from_primitive(cls, primitive_type: str, dimensions: Dict[str, float]) -> None:
+    def from_primitive(cls, primitive_type: str, dimensions: Dict[str, float]) -> "Geometry":
         """
         Create geometry from primitive shapes
         
@@ -558,7 +558,7 @@ class Geometry:
         return geom
 
     @classmethod
-    def from_prism(cls, base_points: List[Tuple[float, float]], height: float) -> None:
+    def from_prism(cls, base_points: List[Tuple[float, float]], height: float) -> "Geometry":
         """
         Create a vertical prism from a base polygon.
 
@@ -596,7 +596,8 @@ class Geometry:
         geom._mesh_generated = True
         return geom
 
-    def from_surface(cls, points: List[Tuple[float, float, float]]) -> None:
+    @classmethod
+    def from_surface(cls, points: List[Tuple[float, float, float]]) -> "Geometry":
         """
         Create a mesh directly from unordered 3D points.
 
@@ -716,27 +717,31 @@ class Geometry:
     
     def get_centroid(self) -> Vector3D:
         """Get the centroid of the geometry."""
-        if self.mesh_data and "vertices" in self.mesh_data:
-            vertices = np.array(self.mesh_data["vertices"])
+        mesh = self.mesh
+        if mesh and "vertices" in mesh:
+            vertices = np.array(mesh["vertices"])
             centroid = vertices.mean(axis=0)
             return Vector3D(*centroid)
         return Vector3D()
     
     def get_vertices(self) -> List[Tuple[float, float, float]]:
         """Get the vertices of the geometry."""
-        if self.mesh_data and "vertices" in self.mesh_data:
-            return [tuple(v) for v in self.mesh_data["vertices"]]
+        mesh = self.mesh
+        if mesh and "vertices" in mesh:
+            return [tuple(v) for v in mesh["vertices"]]
         return []
     def get_faces(self) -> List[Tuple[int, ...]]:
         """Get the faces of the geometry."""
-        if self.mesh_data and "faces" in self.mesh_data:
-            return [tuple(f) for f in self.mesh_data["faces"]]
+        mesh = self.mesh
+        if mesh and "faces" in mesh:
+            return [tuple(f) for f in mesh["faces"]]
         return []
     
     def get_height(self) -> float:
         """Get the height of the geometry."""
-        if self.mesh_data and "vertices" in self.mesh_data:
-            vertices = np.array(self.mesh_data["vertices"])
+        mesh = self.mesh
+        if mesh and "vertices" in mesh:
+            vertices = np.array(mesh["vertices"])
             min_z = vertices[:, 2].min()
             max_z = vertices[:, 2].max()
             return max_z - min_z
@@ -744,8 +749,9 @@ class Geometry:
 
     def get_bbox(self) -> Tuple[np.ndarray, np.ndarray]:
         """Get axis-aligned bounding box as (min_point, max_point)."""
-        if self.mesh_data and "vertices" in self.mesh_data:
-            vertices = np.array(self.mesh_data["vertices"])
+        mesh = self.mesh
+        if mesh and "vertices" in mesh:
+            vertices = np.array(mesh["vertices"])
             min_point = vertices.min(axis=0)
             max_point = vertices.max(axis=0)
             return min_point, max_point
@@ -863,11 +869,12 @@ class Geometry:
         except ImportError:
             return None
         
-        if not self.mesh_data or "vertices" not in self.mesh_data or "faces" not in self.mesh_data:
+        mesh = self.mesh
+        if not mesh or "vertices" not in mesh or "faces" not in mesh:
             return None
         
-        vertices = self.mesh_data["vertices"]
-        faces = self.mesh_data["faces"]
+        vertices = mesh["vertices"]
+        faces = mesh["faces"]
         
         if not vertices or not faces:
             return None
@@ -883,11 +890,12 @@ class Geometry:
         """
         Compute the volume of a closed triangular mesh using the centroid-shifted divergence theorem.
         """
-        if not self.mesh_data or "vertices" not in self.mesh_data or "faces" not in self.mesh_data:
+        mesh = self.mesh
+        if not mesh or "vertices" not in mesh or "faces" not in mesh:
             return 0.0
 
-        vertices = np.array(self.mesh_data["vertices"])
-        faces = self.mesh_data["faces"]
+        vertices = np.array(mesh["vertices"])
+        faces = mesh["faces"]
 
         # Compute centroid of the mesh
         centroid = np.mean(vertices, axis=0)

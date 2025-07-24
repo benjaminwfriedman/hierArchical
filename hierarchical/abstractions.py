@@ -1183,6 +1183,10 @@ class Model:
         groups.sort(key=lambda x: (x['error'], -x['face_count']))
 
 
+        # Safety check for empty groups
+        if not groups:
+            return []
+            
         min_error = min([g['error'] for g in groups])
         max_face_count = max([g['face_count'] for g in groups])
 
@@ -1358,7 +1362,11 @@ class Model:
             # determine the % of this span that the wall height covers
             wall_height = wall.get_height()
             wall_span = max_z - min_z
-            wall_height_ratio = wall_height / wall_span
+            # Avoid division by zero when all decks are at the same height
+            if wall_span == 0:
+                wall_height_ratio = 1.0  # Assume full height wall if no span
+            else:
+                wall_height_ratio = wall_height / wall_span
 
             # if the wall height is greater than 90% of the span then its a full height wall
             if wall_height_ratio > 0.7:
