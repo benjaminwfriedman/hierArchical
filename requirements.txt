@@ -6,6 +6,7 @@ networkx
 matplotlib
 trimesh
 topologicpy
+pythonocc-core==7.8.1
 ipython
 nbformat
 kuzu

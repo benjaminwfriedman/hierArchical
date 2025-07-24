@@ -115,11 +115,31 @@ class MockGeometry:
             "vertices": vertices or [],
             "faces": faces or []
         }
-        self.brep_data = {}
-        self.oc_geometry = None
+        # Initialize new representation fields for mock
+        self._mesh_data = None
+        self._opencascade_shape = None  
+        self._topologic_topology = None
+        self._mesh_generated = False
+        self._occ_generated = False
+        self._topologic_generated = False
         self.origin = MockVertex(0, 0, 0)
         self.transform = None
         self.sub_geometries = ()
+    
+    @property
+    def mesh(self):
+        """Mock mesh property for compatibility with new geometry system"""
+        return self.mesh_data
+    
+    @property  
+    def opencascade(self):
+        """Mock opencascade property"""
+        return None
+        
+    @property
+    def topologic(self):
+        """Mock topologic property"""
+        return None
     
     def compute_volume(self) -> float:
         """Simple volume calculation for testing."""
