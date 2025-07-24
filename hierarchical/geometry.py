@@ -162,30 +162,14 @@ class Geometry:
     def _topologic_to_mesh(self, topology: Topology) -> Dict[str, Any]:
         """Convert TopologicPy topology to mesh representation"""
         try:
-            from topologicpy.Vertex import Vertex
-            from topologicpy.Face import Face
+            from topologicpy.Topology import Topology
             
-            # Get all vertices
-            vertices = []
-            vertex_objects = topology.Vertices()
-            for vertex in vertex_objects:
-                x, y, z = Vertex.Coordinates(vertex)
-                vertices.append((x, y, z))
+            # Use the MeshData static method to convert topology to mesh
+            mesh_data = Topology.MeshData(topology, mode=0, transferDictionaries=False, mantissa=6, silent=True)
             
-            # Get all faces and triangulate them
-            faces = []
-            face_objects = topology.Faces()
-            for face in face_objects:
-                face_vertices = Face.Vertices(face)
-                if len(face_vertices) >= 3:
-                    # Simple fan triangulation for now
-                    for i in range(1, len(face_vertices) - 1):
-                        triangle = [
-                            vertex_objects.index(face_vertices[0]),
-                            vertex_objects.index(face_vertices[i]),
-                            vertex_objects.index(face_vertices[i + 1])
-                        ]
-                        faces.append(tuple(triangle))
+            # Convert to the expected format
+            vertices = [tuple(vertex) for vertex in mesh_data['vertices']]
+            faces = [tuple(face) for face in mesh_data['faces']]
             
             return {"vertices": vertices, "faces": faces}
         except Exception as e:
