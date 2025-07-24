@@ -94,17 +94,20 @@ def plot_items(items,
                     for face in item_faces:
                         faces.append(tuple(idx + offset for idx in face))
             else:
-                # Fall back to brep_data
-                brep = item.geometry.brep_data
-                surfaces = brep.get("surfaces", [])
-                for surf in surfaces:
-                    vs = surf.get("vertices", [])
+                # If no mesh_data, try using the mesh property from new system
+                try:
+                    mesh = item.geometry.mesh
+                    item_vertices = mesh.get("vertices", [])
+                    item_faces = mesh.get("faces", [])
+                    
                     offset = len(vertices)
-                    vertices.extend(vs)
-
-                    if len(vs) >= 3:
-                        for i in range(1, len(vs) - 1):
-                            faces.append((offset, offset + i, offset + i + 1))
+                    vertices.extend(item_vertices)
+                    
+                    for face in item_faces:
+                        faces.append(tuple(idx + offset for idx in face))
+                except:
+                    # No geometry data available
+                    continue
 
         if not vertices or not faces:
             continue

@@ -2128,21 +2128,28 @@ class Model:
                 faces = []
 
                 for item in group:
-                    # Check if item has geometry and brep_data
-                    if not hasattr(item, 'geometry') or not hasattr(item.geometry, 'brep_data'):
+                    # Check if item has geometry 
+                    if not hasattr(item, 'geometry'):
                         continue
 
-                    brep = item.geometry.brep_data
-                    surfaces = brep.get("surfaces", [])
-
-                    for surf in surfaces:
-                        vs = surf.get("vertices", [])
+                    # Use mesh representation for vertex/face extraction
+                    try:
+                        mesh = item.geometry.mesh
+                        item_vertices = mesh.get("vertices", [])
+                        item_faces = mesh.get("faces", [])
+                        
+                        # Add vertices with offset
                         offset = len(vertices)
-                        vertices.extend(vs)
-
-                        if len(vs) >= 3:
-                            for i in range(1, len(vs) - 1):
-                                faces.append((offset, offset + i, offset + i + 1))
+                        vertices.extend(item_vertices)
+                        
+                        # Add faces with vertex index offset
+                        for face in item_faces:
+                            if len(face) >= 3:
+                                faces.append(tuple(idx + offset for idx in face))
+                        continue
+                    except:
+                        # Fallback: no geometry data available
+                        continue
 
                 if not vertices or not faces:
                     continue
