@@ -131,7 +131,7 @@ class TestGeometryInitialization:
         assert geometry.sub_geometries == ()
         assert geometry.mesh_data == {}
         assert geometry.brep_data == {}
-        assert geometry.oc_geometry is None
+        assert geometry._opencascade_shape is None
         assert isinstance(geometry.origin, Vector3D)
         assert geometry.origin.as_tuple() == (0.0, 0.0, 0.0)
         assert geometry.transform is None

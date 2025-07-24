@@ -1250,7 +1250,7 @@ class Model:
                         
                         boundary.geometry.mesh_data["vertices"] = vertices
                         boundary.geometry.mesh_data["faces"] = faces
-                        boundary.geometry.oc_geometry = healed_faces[i]
+                        boundary.geometry._opencascade_shape = healed_faces[i]
                         
                 except Exception as e:
                     print(f"Error updating boundary {i}: {e}")
@@ -1830,7 +1830,7 @@ class Model:
                 # generate temp file
                 temp_path = f'temp_{uuid4()}.brep'
                 # write occ to brep file with oi string
-                breptools.Write(boundary.geometry.oc_geometry, temp_path)
+                breptools.Write(boundary.geometry._opencascade_shape, temp_path)
 
                 topology = Topology.ByBREPPath(temp_path)
 
@@ -1852,7 +1852,7 @@ class Model:
                 # topologic_vertices = [Vertex.ByCoordinates(x=v[0], y=v[1], z=v[2]) for v in boundary.geometry.get_vertices()]
                 # topologic_face = Face.ByVertices(topologic_vertices, tolerance=0.01, silent=True)
 
-                topologic_face = occ_to_topologic(boundary.geometry.oc_geometry)
+                topologic_face = occ_to_topologic(boundary.geometry._opencascade_shape)
                 if topologic_face:
                     face_dict = Topology.Dictionary(topologic_face)
                     face_dict = Dictionary.SetValueAtKey(face_dict, 'boundary_id', boundary.id)
