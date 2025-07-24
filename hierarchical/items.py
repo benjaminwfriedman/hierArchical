@@ -71,11 +71,13 @@ class BaseItem:
         vertex_offset = 0
 
         for geom in geometries:
-            if not geom.mesh_data:
+            # Use new mesh property for accessing mesh data
+            mesh = geom.mesh
+            if not mesh:
                 continue
 
-            verts = geom.mesh_data.get("vertices", [])
-            faces = geom.mesh_data.get("faces", [])
+            verts = mesh.get("vertices", [])
+            faces = mesh.get("faces", [])
 
             all_vertices.extend(verts)
 
@@ -87,13 +89,12 @@ class BaseItem:
 
             vertex_offset += len(verts)
 
-        combined.mesh_data = {
+        # Set mesh data using new representation system
+        combined._mesh_data = {
             "vertices": all_vertices,
             "faces": all_faces,
         }
-
-        combined._generate_brep_from_mesh()
-
+        combined._mesh_generated = True
         combined.sub_geometries = deepcopy(geometries)
         return combined
     
