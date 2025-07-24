@@ -1575,6 +1575,9 @@ class Model:
                 if boundary_id == other_boundary_id:
                     continue
                 # Check if the boundaries intersect this needs to be a mesh intersect
+                # Skip if either boundary has no geometry
+                if boundary.geometry is None or other_boundary.geometry is None:
+                    continue
                 if boundary.geometry.mesh_intersects(other_boundary.geometry):
                     # Create adjacency relationship
                     rel = AdjacentTo(boundary_id, other_boundary_id)

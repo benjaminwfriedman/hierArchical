@@ -59,7 +59,7 @@ def mock_trimesh():
     mock_mesh = Mock()
     mock_mesh.volume = 1.0
     mock_mesh.is_watertight = True
-    mock_mesh.intersects_mesh.return_value = True
+    # Mock trimesh intersection methods don't exist in real trimesh
     mock_mesh.intersection.return_value = mock_mesh
     mock.Trimesh.return_value = mock_mesh
     return mock

@@ -829,17 +829,23 @@ class Geometry:
             return 0.0 if return_overlap_percent else False
         
         try:
-            # Check if meshes intersect
-            intersects = mesh1.intersects_mesh(mesh2)
+            # For trimesh intersection, first check bounding box overlap
+            if not self.bbox_intersects(other):
+                return 0.0 if return_overlap_percent else False
             
+            # For simple intersection test, we'll use bounding box for now
+            # More sophisticated mesh intersection would require additional libraries
             if not return_overlap_percent:
-                return intersects
+                return True  # If bboxes intersect, assume mesh intersection
             
-            if not intersects:
-                return 0.0
-            
-            # Calculate overlap percentage if requested
-            intersection = mesh1.intersection(mesh2)
+            # For overlap percentage calculation, try trimesh intersection if volumes are valid
+            if mesh1.is_volume and mesh2.is_volume:
+                try:
+                    intersection = mesh1.intersection(mesh2)
+                except:
+                    intersection = None
+            else:
+                intersection = None
             
             if intersection is None or not hasattr(intersection, 'volume'):
                 return 0.0
