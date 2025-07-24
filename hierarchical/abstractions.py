@@ -1183,6 +1183,10 @@ class Model:
         groups.sort(key=lambda x: (x['error'], -x['face_count']))
 
 
+        # Safety check for empty groups
+        if not groups:
+            return []
+            
         min_error = min([g['error'] for g in groups])
         max_face_count = max([g['face_count'] for g in groups])
 
@@ -1246,7 +1250,7 @@ class Model:
                         
                         boundary.geometry.mesh_data["vertices"] = vertices
                         boundary.geometry.mesh_data["faces"] = faces
-                        boundary.geometry.oc_geometry = healed_faces[i]
+                        boundary.geometry._opencascade_shape = healed_faces[i]
                         
                 except Exception as e:
                     print(f"Error updating boundary {i}: {e}")
@@ -1358,7 +1362,11 @@ class Model:
             # determine the % of this span that the wall height covers
             wall_height = wall.get_height()
             wall_span = max_z - min_z
-            wall_height_ratio = wall_height / wall_span
+            # Avoid division by zero when all decks are at the same height
+            if wall_span == 0:
+                wall_height_ratio = 1.0  # Assume full height wall if no span
+            else:
+                wall_height_ratio = wall_height / wall_span
 
             # if the wall height is greater than 90% of the span then its a full height wall
             if wall_height_ratio > 0.7:
@@ -1567,6 +1575,9 @@ class Model:
                 if boundary_id == other_boundary_id:
                     continue
                 # Check if the boundaries intersect this needs to be a mesh intersect
+                # Skip if either boundary has no geometry
+                if boundary.geometry is None or other_boundary.geometry is None:
+                    continue
                 if boundary.geometry.mesh_intersects(other_boundary.geometry):
                     # Create adjacency relationship
                     rel = AdjacentTo(boundary_id, other_boundary_id)
@@ -1819,7 +1830,7 @@ class Model:
                 # generate temp file
                 temp_path = f'temp_{uuid4()}.brep'
                 # write occ to brep file with oi string
-                breptools.Write(boundary.geometry.oc_geometry, temp_path)
+                breptools.Write(boundary.geometry._opencascade_shape, temp_path)
 
                 topology = Topology.ByBREPPath(temp_path)
 
@@ -1841,7 +1852,7 @@ class Model:
                 # topologic_vertices = [Vertex.ByCoordinates(x=v[0], y=v[1], z=v[2]) for v in boundary.geometry.get_vertices()]
                 # topologic_face = Face.ByVertices(topologic_vertices, tolerance=0.01, silent=True)
 
-                topologic_face = occ_to_topologic(boundary.geometry.oc_geometry)
+                topologic_face = occ_to_topologic(boundary.geometry._opencascade_shape)
                 if topologic_face:
                     face_dict = Topology.Dictionary(topologic_face)
                     face_dict = Dictionary.SetValueAtKey(face_dict, 'boundary_id', boundary.id)
@@ -2128,21 +2139,28 @@ class Model:
                 faces = []
 
                 for item in group:
-                    # Check if item has geometry and brep_data
-                    if not hasattr(item, 'geometry') or not hasattr(item.geometry, 'brep_data'):
+                    # Check if item has geometry 
+                    if not hasattr(item, 'geometry'):
                         continue
 
-                    brep = item.geometry.brep_data
-                    surfaces = brep.get("surfaces", [])
-
-                    for surf in surfaces:
-                        vs = surf.get("vertices", [])
+                    # Use mesh representation for vertex/face extraction
+                    try:
+                        mesh = item.geometry.mesh
+                        item_vertices = mesh.get("vertices", [])
+                        item_faces = mesh.get("faces", [])
+                        
+                        # Add vertices with offset
                         offset = len(vertices)
-                        vertices.extend(vs)
-
-                        if len(vs) >= 3:
-                            for i in range(1, len(vs) - 1):
-                                faces.append((offset, offset + i, offset + i + 1))
+                        vertices.extend(item_vertices)
+                        
+                        # Add faces with vertex index offset
+                        for face in item_faces:
+                            if len(face) >= 3:
+                                faces.append(tuple(idx + offset for idx in face))
+                        continue
+                    except:
+                        # Fallback: no geometry data available
+                        continue
 
                 if not vertices or not faces:
                     continue

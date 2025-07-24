@@ -59,7 +59,7 @@ def mock_trimesh():
     mock_mesh = Mock()
     mock_mesh.volume = 1.0
     mock_mesh.is_watertight = True
-    mock_mesh.intersects_mesh.return_value = True
+    # Mock trimesh intersection methods don't exist in real trimesh
     mock_mesh.intersection.return_value = mock_mesh
     mock.Trimesh.return_value = mock_mesh
     return mock
@@ -115,11 +115,31 @@ class MockGeometry:
             "vertices": vertices or [],
             "faces": faces or []
         }
-        self.brep_data = {}
-        self.oc_geometry = None
+        # Initialize new representation fields for mock
+        self._mesh_data = None
+        self._opencascade_shape = None  
+        self._topologic_topology = None
+        self._mesh_generated = False
+        self._occ_generated = False
+        self._topologic_generated = False
         self.origin = MockVertex(0, 0, 0)
         self.transform = None
         self.sub_geometries = ()
+    
+    @property
+    def mesh(self):
+        """Mock mesh property for compatibility with new geometry system"""
+        return self.mesh_data
+    
+    @property  
+    def opencascade(self):
+        """Mock opencascade property"""
+        return None
+        
+    @property
+    def topologic(self):
+        """Mock topologic property"""
+        return None
     
     def compute_volume(self) -> float:
         """Simple volume calculation for testing."""
