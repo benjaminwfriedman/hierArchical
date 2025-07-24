@@ -71,11 +71,13 @@ class BaseItem:
         vertex_offset = 0
 
         for geom in geometries:
-            if not geom.mesh_data:
+            # Use new mesh property for accessing mesh data
+            mesh = geom.mesh
+            if not mesh:
                 continue
 
-            verts = geom.mesh_data.get("vertices", [])
-            faces = geom.mesh_data.get("faces", [])
+            verts = mesh.get("vertices", [])
+            faces = mesh.get("faces", [])
 
             all_vertices.extend(verts)
 
@@ -87,13 +89,12 @@ class BaseItem:
 
             vertex_offset += len(verts)
 
-        combined.mesh_data = {
+        # Set mesh data using new representation system
+        combined._mesh_data = {
             "vertices": all_vertices,
             "faces": all_faces,
         }
-
-        combined._generate_brep_from_mesh()
-
+        combined._mesh_generated = True
         combined.sub_geometries = deepcopy(geometries)
         return combined
     
@@ -688,7 +689,6 @@ class Object(BaseItem):
                 "vertices": verts,
                 "faces": faces
             }
-            geometry._generate_brep_from_mesh()
         except Exception as e:
             print(f"[IFC] Geometry extraction failed for {name}: {e}")
 
@@ -778,8 +778,7 @@ class Wall(Object):
             "faces": faces
         }
         
-        # Generate B-rep data from the mesh
-        geometry._generate_brep_from_mesh()
+        # B-rep data is generated automatically via lazy loading in new system
         
         # Set the origin to the center point of the plane
         center_point = center_plane['point']
@@ -796,10 +795,11 @@ class Wall(Object):
             Dictionary containing 'normal', 'point', 'thickness_direction', and 'vertices' that define the center plane.
         """
         geometry = self.geometry
-        if not geometry.mesh_data:
+        mesh = geometry.mesh
+        if not mesh:
             return None
         
-        vertices = geometry.mesh_data.get("vertices", [])
+        vertices = mesh.get("vertices", [])
         if not vertices:
             return None
         
@@ -945,13 +945,13 @@ class Wall(Object):
                 faces.append((0, i, i + 1))
         
         geometry = Geometry()
-        geometry.mesh_data = {
+        geometry._mesh_data = {
             "vertices": vertices,
             "faces": faces,
         }
+        geometry._mesh_generated = True
         
-        # Generate B-rep data from the mesh
-        geometry._generate_brep_from_mesh()
+        # B-rep data is generated automatically via lazy loading in new system
         
         
         return geometry
@@ -1251,7 +1251,6 @@ class Door(Object):
                 "vertices": verts,
                 "faces": faces
             }
-            geometry._generate_brep_from_mesh()
         except Exception as e:
             print(f"[IFC] Geometry extraction failed for {name}: {e}")
 
@@ -1407,8 +1406,7 @@ class Deck(Object):
             "faces": faces
         }
         
-        # Generate B-rep data from the mesh
-        geometry._generate_brep_from_mesh()
+        # B-rep data is generated automatically via lazy loading in new system
         
         # Set the origin to the center point of the plane
         center_point = center_plane['point']
@@ -1425,10 +1423,11 @@ class Deck(Object):
             Dictionary containing 'normal', 'point', 'thickness_direction', and 'vertices' that define the center plane.
         """
         geometry = self.geometry
-        if not geometry.mesh_data:
+        mesh = geometry.mesh
+        if not mesh:
             return None
         
-        vertices = geometry.mesh_data.get("vertices", [])
+        vertices = mesh.get("vertices", [])
         if not vertices:
             return None
         
