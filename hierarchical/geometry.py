@@ -795,6 +795,68 @@ class Geometry:
         center1 = (self.get_bbox()[0] + self.get_bbox()[1]) / 2
         center2 = (other.get_bbox()[0] + other.get_bbox()[1]) / 2
         return np.linalg.norm(center1 - center2)
+
+    def open_cascade_intersects(self, other: 'Geometry', return_overlap_percent: bool = False) -> Union[bool, float]:
+        """
+        Check if OpenCascade shapes intersect.
+        
+        Args:
+            other: Another Geometry object to check intersection with
+            return_overlap_percent: If True, return the overlap percentage instead of boolean
+            
+        Returns:
+            If return_overlap_percent is False: bool indicating intersection
+            If return_overlap_percent is True: float representing overlap percentage (0.0 to 100.0)
+        """
+        shape1 = self.opencascade
+        shape2 = other.opencascade
+        
+        if not shape1 or not shape2:
+            # If either shape is not available, fallback to bounding box intersection
+            return self.bbox_intersects(other, return_overlap_percent)
+        
+        from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Common
+        
+        common_shape = BRepAlgoAPI_Common(shape1, shape2)
+        
+        if common_shape.IsDone():
+            if common_shape.Shape().IsNull():
+                return 0.0 if return_overlap_percent else False
+            else:
+                if return_overlap_percent:
+                    # Calculate overlap volume percentage
+                    common_volume = Topology.Volume(common_shape.Shape())
+                    volume1 = Topology.Volume(shape1)
+                    
+                    percentage = (common_volume / volume1) * 100.0 if volume1 > 0 else 0.0
+                    return percentage
+                else:
+                    return True
+        else:
+            return 0.0 if return_overlap_percent else False
+    
+    
+    def topologic_intersects(self, other: 'Geometry', return_overlap_percent: bool = False) -> Union[bool, float]:
+        from topologicpy.Topology import Topology
+        topology1 = self.topologic
+        topology2 = other.topologic
+
+        if not topology1 or not topology2:
+            # If either topology is not available, fallback to bounding box intersection
+            return self.bbox_intersects(other, return_overlap_percent)
+        
+        intersect = Topology.Intersect(topology1, topology2, tolerance=0.01)
+        if not intersect:
+            return 0.0 if return_overlap_percent else False
+        else:
+            if return_overlap_percent:
+                intersect_volume = Topology.Volume(intersect)
+                volume1 = Topology.Volume(topology1)
+
+                percentage = (intersect_volume / volume1) * 100.0 if volume1 > 0 else 0.0
+                return percentage
+            else:
+                return True
     
     
     def mesh_intersects(self, other: 'Geometry', return_overlap_percent: bool = False) -> Union[bool, float]:
@@ -809,48 +871,46 @@ class Geometry:
         mesh1 = self._to_trimesh()
         mesh2 = other._to_trimesh()
         
+        # If either mesh conversion failed, fallback to bounding box intersection
         if mesh1 is None or mesh2 is None:
-            return 0.0 if return_overlap_percent else False
-        
-        try:
-            # For trimesh intersection, first check bounding box overlap
-            if not self.bbox_intersects(other):
-                return 0.0 if return_overlap_percent else False
-            
-            # For simple intersection test, we'll use bounding box for now
-            # More sophisticated mesh intersection would require additional libraries
-            if not return_overlap_percent:
-                return True  # If bboxes intersect, assume mesh intersection
-            
-            # For overlap percentage calculation, try trimesh intersection if volumes are valid
-            if mesh1.is_volume and mesh2.is_volume:
-                try:
-                    intersection = mesh1.intersection(mesh2)
-                except:
-                    intersection = None
-            else:
-                intersection = None
-            
-            if intersection is None or not hasattr(intersection, 'volume'):
-                return 0.0
-            
-            # Calculate overlap as percentage of smaller mesh
-            vol1 = mesh1.volume if mesh1.is_watertight else 0
-            vol2 = mesh2.volume if mesh2.is_watertight else 0
-            intersection_vol = intersection.volume if intersection.is_watertight else 0
-            
-            if vol1 <= 0 or vol2 <= 0:
-                return 0.0
-            
-            # Return percentage of smaller volume that overlaps
-            min_volume = min(vol1, vol2)
-            overlap_percent = (intersection_vol / min_volume) * 100.0
-            
-            return min(overlap_percent, 100.0)  # Cap at 100%
-            
-        except Exception as e:
-            print(f"Error in mesh intersection: {e}")
             return self.bbox_intersects(other, return_overlap_percent)
+        
+        else:
+            try:
+                # Check for intersection using trimesh
+                intersection = mesh1.intersection(mesh2)
+                if not intersection:
+                    return 0.0 if return_overlap_percent else False
+                else:
+                    # Intersection found
+                    if return_overlap_percent:
+                        num_samples = 50_000
+                        if mesh1.is_watertight:
+                            points = mesh1.sample_volume(num_samples)
+                        else:
+                            # For non-watertight meshes, sample the surface and nearby volume
+                            surface_points, _ = mesh1.sample(num_samples // 2)
+                            
+                            # Add some points slightly inside/outside the surface
+                            normals = mesh1.face_normals[mesh1.nearest.on_surface(surface_points)[2]]
+                            offset_distance = mesh1.scale / 100  # Small offset
+                            
+                            inside_points = surface_points - normals * offset_distance
+                            outside_points = surface_points + normals * offset_distance
+                            
+                            points = np.vstack([surface_points, inside_points, outside_points])
+                        
+                        # Check which points are inside mesh2
+                        inside_mask = mesh2.contains(points)
+                        
+                        # Calculate percentage
+                        percentage = (np.sum(inside_mask) / len(points)) * 100
+                        return percentage
+                    else:
+                        # If we just want to know if they intersect
+                        return True
+            except Exception:
+                return self.bbox_intersects(other, return_overlap_percent)
 
     def _to_trimesh(self) -> Optional['trimesh.Trimesh']:
         """Convert this geometry to a trimesh object."""
