@@ -196,6 +196,7 @@ if __name__ == "__main__":
     created_door.convert_to_metric()
 
     created_door.up(deck_thickness)
+    created_door.move(dx=1.0, dy=0.05) 
 
     # --- Plot and Report ---
     objects = [wall_long_1, wall_long_2, wall_short_1, wall_short_2,
@@ -212,5 +213,7 @@ if __name__ == "__main__":
 
     print("Q: What spaces are next to Space 1?")
     print(model.ask("What spaces are next to Space 1?"))
-  
+
+    print("Q: Do any Walls have Doors?")
+    print(model.ask("Do any Walls have Doors?"))
 
