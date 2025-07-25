@@ -194,17 +194,19 @@ if __name__ == "__main__":
     created_door.convert_to_metric()
 
     created_door.up(deck_thickness)
+    # Position door to create substantial overlap with the south wall (wall_long_1)
+    # Move door into the wall volume to create actual overlap
+    created_door.move(dx=1.0, dy=0.02)  # Move slightly into the wall to create volumetric overlap
 
     # --- Plot and Report ---
     objects = [wall_long_1, wall_long_2, wall_short_1, wall_short_2,
                deck, deck2, wall_long_3, wall_long_4, wall_short_3]
     
-    door_intersection_items = created_door.find_intersecting_items(objects, threshold=0.01)
-
+    # Add door to objects list - embedded relationships will be inferred if using Model.from_objects
     objects.append(created_door)
-
-    for object in door_intersection_items:
-        created_door.add_embedded_in_relationship(object)
+    
+    # Embedded relationships will now be inferred automatically by Model.from_objects()
+    # with 95% overlap threshold and only for embeddable objects (doors, windows)
 
     for object in objects:
         adjacent_items = object.find_adjacent_items(objects, tolerance=0.01)

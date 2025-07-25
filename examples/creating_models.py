@@ -196,15 +196,32 @@ if __name__ == "__main__":
     created_door.convert_to_metric()
 
     created_door.up(deck_thickness)
+    # Position door to create substantial overlap with wall
+    created_door.move(dx=1.0, dy=0.05)  # Move deeper into wall to create more overlap
+
+    # Door positioned to intersect with wall for embedded relationship detection
 
     # --- Plot and Report ---
     objects = [wall_long_1, wall_long_2, wall_short_1, wall_short_2,
                deck, deck2, wall_long_3, wall_long_4, wall_short_3, created_door, deck_roof, deck2_roof]
     
-    # Create the model from objects
+    # Create the model from objects - embedded_in relationships should be inferred automatically
     model_name = f"Example Building Model {uuid4().hex[:8].upper()}"
     print(f"Creating model: {model_name}")
     model = Model.from_objects(model_name, objects)
+    
+    # Print embedded relationships that were automatically inferred
+    print("\nAutomatically inferred embedded relationships:")
+    embedded_count = 0
+    for obj_id, relationships in model.relationships.items():
+        for rel in relationships:
+            if rel.type in ["embedded_in", "embeds"]:
+                source_obj = model.objects.get(rel.source)
+                target_obj = model.objects.get(rel.target)
+                if source_obj and target_obj:
+                    print(f"{source_obj.name} ---{rel.type}-> {target_obj.name}")
+                    embedded_count += 1
+    print(f"Total embedded relationships: {embedded_count}")
 
     # view the spaces + objects
     model.show_spaces()
