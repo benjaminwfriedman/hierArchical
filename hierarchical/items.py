@@ -51,6 +51,9 @@ class BaseItem:
     # A unique UUID
     id: str = field(default_factory=lambda: str(uuid4()))
 
+    # Flag indicating if this item can be embedded in other items (e.g., doors, windows)
+    embeddable: bool = False
+
     def __repr__(self):
         """Lightweight representation for debugger"""
         return f"{self.__class__.__name__}(id={self.id}, name='{self.name}', type='{self.type}')"
@@ -213,9 +216,26 @@ class BaseItem:
         Returns:
             If return_overlap_percent is False: bool indicating intersection
             If return_overlap_percent is True: float representing overlap percentage (0.0 to 100.0)
+
+        Try topologic_intersects first then mesh_intersects then bbox_intersects
         """
-        return self.geometry.mesh_intersects(other.geometry, return_overlap_percent=return_overlap_percent)
-    
+        # First check if both items have geometry
+        if not self.geometry or not other.geometry:
+            return False if not return_overlap_percent else 0.0
+        
+        # Check using topologic_intersects first
+        overlap_percent = self.geometry.open_cascade_intersects(other.geometry, return_overlap_percent=return_overlap_percent)
+        if overlap_percent is not None:
+            return overlap_percent
+        
+        # Fallback to mesh_intersects
+        overlap_percent = self.geometry.mesh_intersects(other.geometry, return_overlap_percent=return_overlap_percent)
+        if overlap_percent is not None:
+            return overlap_percent
+        
+        # Fallback to bounding box intersection
+        return self.geometry.bbox_intersects(other.geometry, return_overlap_percent=return_overlap_percent)
+
     def is_adjacent_to(self, other: 'BaseItem', tolerance: float = 0.1) -> bool:
         """
         Check if this item is adjacent (touching or very close) to another item.
@@ -1211,6 +1231,7 @@ class Wall(Object):
 class Door(Object):
     swing_direction: Optional[str] = None
     panel_position: Optional[str] = None
+    embeddable: bool = True  # Doors can be embedded in walls
 
     
     @classmethod
@@ -1326,6 +1347,7 @@ class Door(Object):
 
 @dataclass(slots=True)
 class Window(Object):
+    embeddable: bool = True  # Windows can be embedded in walls
     @classmethod
     def from_components(
         cls,

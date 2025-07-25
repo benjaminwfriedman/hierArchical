@@ -89,3 +89,83 @@ class SupportedBy(Relationship):
 class Creates(Relationship):
     """Object 1 creates object 2 (e.g., a tool creating a part)."""
     type: str = field(default="creates", init=False)
+
+@dataclass(slots=True)
+class FlowsTo(Relationship):
+    """Directional flow from object 1 to object 2 (e.g., pipe flows to fixture)."""
+    type: str = field(default="flows_to", init=False)
+
+@dataclass(slots=True)
+class FlowsFrom(Relationship):
+    """Directional flow from object 2 to object 1 (inverse of FlowsTo)."""
+    type: str = field(default="flows_from", init=False)
+
+@dataclass(slots=True)
+class Above(Relationship):
+    """Object 1 is positioned above object 2."""
+    type: str = field(default="above", init=False)
+
+@dataclass(slots=True)
+class Below(Relationship):
+    """Object 1 is positioned below object 2 (inverse of Above)."""
+    type: str = field(default="below", init=False)
+
+@dataclass(slots=True)
+class InFrontOf(Relationship):
+    """Object 1 is positioned in front of object 2."""
+    type: str = field(default="in_front_of", init=False)
+
+@dataclass(slots=True)
+class Behind(Relationship):
+    """Object 1 is positioned behind object 2 (inverse of InFrontOf)."""
+    type: str = field(default="behind", init=False)
+
+@dataclass(slots=True)
+class LeftOf(Relationship):
+    """Object 1 is positioned to the left of object 2."""
+    type: str = field(default="left_of", init=False)
+
+@dataclass(slots=True)
+class RightOf(Relationship):
+    """Object 1 is positioned to the right of object 2 (inverse of LeftOf)."""
+    type: str = field(default="right_of", init=False)
+
+@dataclass(slots=True)
+class ServesSpace(Relationship):
+    """Object 1 serves space 2 (e.g., HVAC unit serves room)."""
+    type: str = field(default="serves_space", init=False)
+
+@dataclass(slots=True)
+class ServedBySystem(Relationship):
+    """Object 1 is served by system 2 (inverse of ServesSpace)."""
+    type: str = field(default="served_by_system", init=False)
+
+@dataclass(slots=True)
+class AccessesSpace(Relationship):
+    """Object 1 provides access to space 2 (e.g., door accesses room)."""
+    type: str = field(default="accesses_space", init=False)
+
+@dataclass(slots=True)
+class ProvidesAccessTo(Relationship):
+    """Object 1 provides access via object 2 (inverse of AccessesSpace)."""
+    type: str = field(default="provides_access_to", init=False)
+
+@dataclass(slots=True)
+class PartOfSystem(Relationship):
+    """Object 1 is a component of system 2."""
+    type: str = field(default="part_of_system", init=False)
+
+@dataclass(slots=True)
+class HasSystemComponent(Relationship):
+    """System 1 has component 2 (inverse of PartOfSystem)."""
+    type: str = field(default="has_system_component", init=False)
+
+@dataclass(slots=True)
+class DistributesTo(Relationship):
+    """Object 1 distributes to object 2 (e.g., main line distributes to branch)."""
+    type: str = field(default="distributes_to", init=False)
+
+@dataclass(slots=True)
+class ReceivesFrom(Relationship):
+    """Object 1 receives from object 2 (inverse of DistributesTo)."""
+    type: str = field(default="receives_from", init=False)

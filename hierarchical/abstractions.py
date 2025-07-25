@@ -502,7 +502,7 @@ class Graph(ABC):
         result = self.query(query)
         return [row['node_type'] for row in result.get_all()] if result else []
 
-    def get_node_types_to_string(self) -> str:
+    def get_node_labels_to_string(self) -> str:
         """
         Get a string representation of all node types in the graph.
         """
@@ -576,6 +576,11 @@ class Graph(ABC):
             return "No connections found."
         return "\n".join(f"{src} --[{rel}]--> {tgt}" for src, rel, tgt in schema)
 
+    def get_node_types_to_string(self) -> str:
+        """
+        Get a string representation of all node types in the graph.
+        """
+        return self.query_to_string("MATCH (n) RETURN DISTINCT n.type, label(n)")
 
 class BuildingGraph(Graph):
     """
@@ -596,6 +601,8 @@ class BuildingGraph(Graph):
 
         # create relationship tables
         self.conn.execute("CREATE REL TABLE IF NOT EXISTS OBJECT_ADJACENT_TO(FROM Object TO Object, type STRING)")
+        self.conn.execute("CREATE REL TABLE IF NOT EXISTS OBJECT_EMBEDDED_IN(FROM Object TO Object, type STRING)")
+        self.conn.execute("CREATE REL TABLE IF NOT EXISTS OBJECT_EMBEDS(FROM Object TO Object, type STRING)")
         self.conn.execute("CREATE REL TABLE IF NOT EXISTS BOUNDARY_ADJACENT_TO(FROM Boundary TO Boundary, type STRING)")
         self.conn.execute("CREATE REL TABLE IF NOT EXISTS OBJECT_CREATES_BOUNDARY(FROM Object TO Boundary, type STRING)")
         self.conn.execute("CREATE REL TABLE IF NOT EXISTS BOUNDARY_CREATES_SPACE(FROM Boundary TO Space, type STRING)")
@@ -667,6 +674,7 @@ class Model:
             model.building_graph.add_node("Object", node_id=obj.id, **features)
 
         model.create_object_adjacency_relationships(tolerance=0.001)
+        model.create_object_embedded_relationships()  # Uses default 95% threshold
         model.infer_bounds(dimentions='3d')
         model.infer_spaces(dimentions='3d')
         model.generate_adjacency_graph()
@@ -686,6 +694,42 @@ class Model:
 
                 # Add edge to graph
                 self.building_graph.add_edge(obj.id, adjacent_item.id, "OBJECT_ADJACENT_TO", from_label="Object", to_label="Object")
+
+    def create_object_embedded_relationships(self, intersection_threshold=50.0):
+        """
+        Add embedded_in relationships between objects in the model based on geometric intersection.
+        Only embeddable objects (doors, windows) with >50% intersection are considered embedded.
+
+        Args:
+            intersection_threshold: Minimum overlap percentage to consider as embedded (default: 95%)
+        """
+        from .relationships import EmbeddedIn, Embeds
+        
+        for obj in self.objects.values():
+            # Only embeddable objects can be embedded in other objects
+            if not getattr(obj, 'embeddable', False):
+                continue
+                
+            # Find all objects that this embeddable object intersects with (excluding itself)
+            other_objects = [other for other in self.objects.values() if other != obj]
+            
+            for other_obj in other_objects:
+                # Check intersection percentage between embeddable object and other object
+                overlap_percent = obj.intersects_with(other_obj, return_overlap_percent=True)
+                
+                # Only create embedded relationship if overlap exceeds threshold
+                if overlap_percent >= intersection_threshold:
+                    # Create embedded_in relationship from embeddable obj to other_obj
+                    embedded_rel = EmbeddedIn(source=obj.id, target=other_obj.id)
+                    self.relationships[obj.id].append(embedded_rel)
+                    
+                    # Create inverse embeds relationship from other_obj to embeddable obj
+                    embeds_rel = Embeds(source=other_obj.id, target=obj.id)
+                    self.relationships[other_obj.id].append(embeds_rel)
+                    
+                    # Add edges to graph (use existing relationship types)
+                    self.building_graph.add_edge(obj.id, other_obj.id, "OBJECT_EMBEDDED_IN", from_label="Object", to_label="Object")
+                    self.building_graph.add_edge(other_obj.id, obj.id, "OBJECT_EMBEDS", from_label="Object", to_label="Object")
 
 
     def heal_boundaries(self, tolerance=15.0):
@@ -2793,14 +2837,27 @@ class Model:
 
         # Step 2: Construct system prompt
         system_prompt = f"""
-    You are an expert in querying a building model stored in a graph database.
+    You are an expert in developing Cypher queries for kuzu to query a building model stored in a graph database.
+
     Here is the graph schema:
-    - Node Types: {node_types}
+    - Node Types: 
+        structured: [n.type, label(n)]
+        {node_types}
     - Relationship Types: {rel_types}
     - Connection Patterns:\n{connections}
 
-    Given a user's question, return a Cypher query that can be run on this graph to answer it.
-    Always use the available types and relationships, and return only the query.
+    Tips:
+    - "has" or "have" questions about two types of items can be answered by looking for OBJECT_EMBEDS or CONTAINS relationships.
+    - "in" questions about two types of items can be answered by looking for OBJECT_EMBEDDED_IN or PART_OF relationships.
+
+
+    Examples:
+    
+    What walls have doors? -> MATCH (o1:Object)-[e:OBJECT_EMBEDS]-(o2:Object) WHERE o1.type = 'Wall' AND o2.type = 'Door' RETURN o1
+    
+
+    Given a user's question, return the Cypher query that can be run on this graph to answer it.
+    Always use the available types and relationships, and return only the query its self, nothing else.
     """
 
         # Step 3: Get Cypher query from OpenAI
