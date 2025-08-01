@@ -1,0 +1,1 @@
+# Catalog module for parametric building materials and components

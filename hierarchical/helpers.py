@@ -317,3 +317,17 @@ def test_healing_validation(boundaries, healed_faces):
         print(f"{key}: {value}")
     
     return results
+
+class AttrDict(dict):
+    """A dictionary that supports attribute-style access."""
+    def __getattr__(self, item):
+        try:
+            return self[item]
+        except KeyError:
+            raise AttributeError(f"'AttrDict' has no attribute '{item}'")
+
+    def __setattr__(self, key, value):
+        self[key] = value
+
+    def __delattr__(self, key):
+        del self[key]
