@@ -2,12 +2,18 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple, List, Union
 from .geometry import Geometry
 import numpy as np
-from .helpers import generate_id, normalize_ifc_enum
+from .helpers import generate_id, normalize_ifc_enum, AttrDict
 from copy import deepcopy
 from pathlib import Path
 from .units import UnitSystem, UnitSystems, UNIT_TO_METER
 from .relationships import EmbeddedIn, Embeds, PassesThrough, HasPassingThrough, Relationship, AdjacentTo
 from uuid import uuid4
+
+## STANDARDIZATION ##
+
+# All items, components, and objects are built starting at 0,0,0 with the X axis being the longest dimention, y being the second longest, and z being the 3rd (or up when up is important)
+# This allows for easy alignment and positioning of items in a 3D space.
+# This also standardizes how object must be moved, rotated and scaled to work together.
 
 
 
@@ -37,7 +43,7 @@ class BaseItem:
     # relationships: Tuple[Relationship, ...] = field(default_factory=tuple)
 
     # Arbitrary measurable or inferred properties (e.g., area, ghg_emissions)
-    attributes: Dict[str, Any] = field(default_factory=dict)
+    attributes: AttrDict = field(default_factory=AttrDict)
 
     # Ontological tags and values (e.g., {'structural': True, 'zone': 'care'})
     ontologies: Dict[str, Any] = field(default_factory=dict)
@@ -60,7 +66,14 @@ class BaseItem:
     
     def __str__(self):
         return self.__repr__()
-    
+
+    def __post_init__(self):
+        self.attributes.length = self.get_length()
+        self.attributes.width = self.get_width()
+        self.attributes.height = self.get_height()
+        self.attributes.centroid = self.geometry.get_centroid()
+        self.attributes.volume = self.geometry.compute_volume()
+
 
     @staticmethod
     def combine_geometries(geometries: Tuple[Geometry, ...]) -> Geometry:
@@ -170,15 +183,47 @@ class BaseItem:
             sub_item.down(dz)
         return self
 
-    def rotate_z(self, angle_rad: float) -> "BaseItem":
+    def rotate_z(self, angle_rad: float, rotation_point: Optional[np.ndarray] = None) -> "BaseItem":
         """
         Rotate the item around the Z-axis. Returns self.
         """
-        self.geometry.rotate_z(angle_rad)
+        self.geometry.rotate_z(angle_rad, rotation_point=rotation_point)
         # Apply the rotation to all sub-items
         for sub_item in self.sub_items:
-            sub_item.rotate_z(angle_rad)
-        return self 
+            sub_item.rotate_z(angle_rad, rotation_point=rotation_point)
+        return self
+
+    def rotate_x(self, angle_rad: float, rotation_point: Optional[np.ndarray] = None) -> "BaseItem":
+        """
+        Rotate the item around the X-axis. Returns self.
+        """
+        self.geometry.rotate_x(angle_rad, rotation_point=rotation_point)
+        # Apply the rotation to all sub-items
+        for sub_item in self.sub_items:
+            sub_item.rotate_x(angle_rad, rotation_point=rotation_point)
+        return self
+
+    def rotate_y(self, angle_rad: float, rotation_point: Optional[np.ndarray] = None) -> "BaseItem":
+        """
+        Rotate the item around the Y-axis. Returns self.
+        """
+        self.geometry.rotate_y(angle_rad, rotation_point=rotation_point)
+        # Apply the rotation to all sub-items
+        for sub_item in self.sub_items:
+            sub_item.rotate_y(angle_rad, rotation_point=rotation_point)
+        return self
+
+    def get_length(self) -> float:
+        min_point, max_point = self.geometry.get_bbox()
+        return float(max_point[0] - min_point[0])
+
+    def get_width(self) -> float:
+        min_point, max_point = self.geometry.get_bbox()
+        return float(max_point[1] - min_point[1])
+
+    def get_height(self) -> float:
+        min_point, max_point = self.geometry.get_bbox()
+        return float(max_point[2] - min_point[2])
 
 
     @classmethod
@@ -598,7 +643,7 @@ class Element(BaseItem):
     material: str = ""
 
     def __post_init__(self):
-        
+        BaseItem.__post_init__(self)
         vol = self.geometry.compute_volume()
         self.materials = {
             self.material: {

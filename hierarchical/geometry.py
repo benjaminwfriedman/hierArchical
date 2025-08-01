@@ -682,9 +682,14 @@ class Geometry:
         self.transform_geometry(matrix)
         return self
         
-    def rotate_z(self, angle_rad: float) -> "Geometry":
+    def rotate_z(self, angle_rad: float, rotation_point: Optional[np.ndarray] = None) -> "Geometry":
         """
         Rotate geometry around Z-axis by angle_rad (in radians).
+        
+        Args:
+            angle_rad: Rotation angle in radians
+            rotation_point: 3D point [x, y, z] to rotate around. If None, rotates around origin.
+        
         Returns self to allow chaining.
         """
         cos_theta = np.cos(angle_rad)
@@ -696,7 +701,117 @@ class Geometry:
             [0.0,        0.0,       1.0, 0.0],
             [0.0,        0.0,       0.0, 1.0]
         ])
-        self.transform_geometry(rot_matrix)
+        
+        if rotation_point is not None:
+            # Translate to rotation point, rotate, then translate back
+            translate_to_origin = np.array([
+                [1.0, 0.0, 0.0, -rotation_point[0]],
+                [0.0, 1.0, 0.0, -rotation_point[1]],
+                [0.0, 0.0, 1.0, -rotation_point[2]],
+                [0.0, 0.0, 0.0, 1.0]
+            ])
+            
+            translate_back = np.array([
+                [1.0, 0.0, 0.0, rotation_point[0]],
+                [0.0, 1.0, 0.0, rotation_point[1]],
+                [0.0, 0.0, 1.0, rotation_point[2]],
+                [0.0, 0.0, 0.0, 1.0]
+            ])
+            
+            # Combine transformations: translate back * rotate * translate to origin
+            combined_matrix = translate_back @ rot_matrix @ translate_to_origin
+            self.transform_geometry(combined_matrix)
+        else:
+            self.transform_geometry(rot_matrix)
+        
+        return self
+    
+    def rotate_x(self, angle_rad: float, rotation_point: Optional[np.ndarray] = None) -> "Geometry":
+        """
+        Rotate geometry around X-axis by angle_rad (in radians).
+        
+        Args:
+            angle_rad: Rotation angle in radians
+            rotation_point: 3D point [x, y, z] to rotate around. If None, rotates around origin.
+        
+        Returns self to allow chaining.
+        """
+        cos_theta = np.cos(angle_rad)
+        sin_theta = np.sin(angle_rad)
+
+        rot_matrix = np.array([
+            [1.0, 0.0,        0.0,       0.0],
+            [0.0, cos_theta, -sin_theta, 0.0],
+            [0.0, sin_theta,  cos_theta, 0.0],
+            [0.0, 0.0,        0.0,       1.0]
+        ])
+        
+        if rotation_point is not None:
+            # Translate to rotation point, rotate, then translate back
+            translate_to_origin = np.array([
+                [1.0, 0.0, 0.0, -rotation_point[0]],
+                [0.0, 1.0, 0.0, -rotation_point[1]],
+                [0.0, 0.0, 1.0, -rotation_point[2]],
+                [0.0, 0.0, 0.0, 1.0]
+            ])
+            
+            translate_back = np.array([
+                [1.0, 0.0, 0.0, rotation_point[0]],
+                [0.0, 1.0, 0.0, rotation_point[1]],
+                [0.0, 0.0, 1.0, rotation_point[2]],
+                [0.0, 0.0, 0.0, 1.0]
+            ])
+            
+            # Combine transformations: translate back * rotate * translate to origin
+            combined_matrix = translate_back @ rot_matrix @ translate_to_origin
+            self.transform_geometry(combined_matrix)
+        else:
+            self.transform_geometry(rot_matrix)
+        
+        return self
+
+    def rotate_y(self, angle_rad: float, rotation_point: Optional[np.ndarray] = None) -> "Geometry":
+        """
+        Rotate geometry around Y-axis by angle_rad (in radians).
+        
+        Args:
+            angle_rad: Rotation angle in radians
+            rotation_point: 3D point [x, y, z] to rotate around. If None, rotates around origin.
+        
+        Returns self to allow chaining.
+        """
+        cos_theta = np.cos(angle_rad)
+        sin_theta = np.sin(angle_rad)
+
+        rot_matrix = np.array([
+            [cos_theta, 0.0, sin_theta, 0.0],
+            [0.0,       1.0, 0.0,       0.0],
+            [-sin_theta, 0.0, cos_theta, 0.0],
+            [0.0,       0.0, 0.0,       1.0]
+        ])
+        
+        if rotation_point is not None:
+            # Translate to rotation point, rotate, then translate back
+            translate_to_origin = np.array([
+                [1.0, 0.0, 0.0, -rotation_point[0]],
+                [0.0, 1.0, 0.0, -rotation_point[1]],
+                [0.0, 0.0, 1.0, -rotation_point[2]],
+                [0.0, 0.0, 0.0, 1.0]
+            ])
+            
+            translate_back = np.array([
+                [1.0, 0.0, 0.0, rotation_point[0]],
+                [0.0, 1.0, 0.0, rotation_point[1]],
+                [0.0, 0.0, 1.0, rotation_point[2]],
+                [0.0, 0.0, 0.0, 1.0]
+            ])
+            
+            # Combine transformations: translate back * rotate * translate to origin
+            combined_matrix = translate_back @ rot_matrix @ translate_to_origin
+            self.transform_geometry(combined_matrix)
+        else:
+            self.transform_geometry(rot_matrix)
+        
         return self
     
     def get_centroid(self) -> Vector3D:
