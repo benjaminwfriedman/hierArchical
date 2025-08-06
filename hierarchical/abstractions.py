@@ -675,7 +675,7 @@ class Model:
 
         model.create_object_adjacency_relationships(tolerance=0.001)
         model.create_object_embedded_relationships()  # Uses default 95% threshold
-        model.infer_bounds(dimentions='3d')
+        model.infer_bounds()
         model.infer_spaces()
         model.generate_adjacency_graph()
 
@@ -781,11 +781,6 @@ class Model:
 
             print(f"Created {len(initial_faces)} initial faces")
 
-            # Define face groups with indices to track overlaps
-            # face_group_indices = [
-            #     [0, 1, 2, 3, 7, 9],      # Group 1
-            #     [3, 4, 5, 6, 8, 10]      # Group 2 (face 3 is shared)
-            # ]
 
             shape_groups = self.find_enclosed_shape_groups(initial_faces)
 
@@ -927,44 +922,13 @@ class Model:
             
             healed_faces_info = Topology.Inherit(healed_faces, topologic_faces, keys='id', exclusive=False, tolerance=0.1, silent=False)
 
-
-            # assigned_faces = []
-            # internal_verts = []
-            # for face in healed_faces:
-            #     internal_vert = Face.InternalVertex(face)
-            #     internal_verts.append(internal_vert)
-            #     for original_face in topologic_faces:
-            #         if Vertex.IsInternal(internal_vert, original_face, tolerance=0.001):
-            #             if Face.IsCoplanar(face, original_face):
-            #                 # check if the current face is Topology.IsSame as any already assigned face
-            #                 if any(Topology.IsSame(face, af) for af in assigned_faces):
-            #                     continue
-            #                 # transfer the dict of the original face to the healed face
-            #                 face = transfer_topologic_dict(original_face, face)
-            #                 assigned_faces.append(face)
-                            # break
             
             '''
             Now we will update the boundary geometries with the geometries of the healed faces
             If boundaries were split or merged in the process of created the cell complex, we will either add or
             remove boundaries from the model accordingly and link them back to their respective base objects
             '''
-            # healed_boundaries = []
-            # for boundary in all_boundaries:
-            #     boundary_id = boundary.id
-            #     for face in healed_faces:
-            #         # check if id is in the face dict
-            #         if 'id' in topology_to_dict(face) and topology_to_dict(face)['id'] == boundary_id:
-            #             print(boundary_id)
-            #             # Create a new boundary
-            #             new_boundary = Boundary(
-            #                 name=boundary.name,
-            #                 type=boundary.type,
-            #                 is_access_boundary=boundary.is_access_boundary,
-            #                 is_visual_boundary=boundary.is_visual_boundary,
-            #                 geometry=Geometry.from_topology(face),
-            #                 base_item=boundary.base_item,
-            #                 )
+         
             healed_boundaries = []
             for face in healed_faces:
                 face_dict = topology_to_dict(face)
@@ -987,15 +951,8 @@ class Model:
                             healed_boundaries.append(new_boundary)
 
 
-            #             # add relationships from original boundary to new boundary
-
-            #             healed_boundaries.append(new_boundary)
-            #             break
-
             # put the new boundaries in the model
             self.boundaries = {b.id: b for b in healed_boundaries}
-
-            # delete old boundaries in the model.
 
             return healed_boundaries
 
@@ -1518,7 +1475,7 @@ class Model:
 
 
 
-    def infer_bounds(self, dimentions: str = "3d"):
+    def infer_bounds(self):
         """
         Find bounds of spaces in the model by exploring walls and wall like objects to determine where spaces
         are located and split up.
@@ -1677,88 +1634,36 @@ class Model:
                 )
 
                 self.boundaries[boundary.id] = boundary
-                # self.boundary_graph.add_node(boundary.id,
-                #                             type=boundary.type,
-                #                             geometry=boundary.geometry,
-                #                             is_access_boundary=boundary.is_access_boundary,
-                #                             is_visual_boundary=boundary.is_visual_boundary,
-                #                             base_item=boundary.base_item,
-                #                             height=boundary.height,
-                #                             normal_vector=boundary.normal_vector,
-                #                             centroid_x=wall.get_centroid().x,
-                #                             centroid_y=wall.get_centroid().y,
-                #                             centroid_z=wall.get_centroid().z)
-
-
-                # # add boundary_id to the walls boundary_id attribute
-                # wall.boundary_id = boundary.id
-
-                # features = {
-                #     'boundary_id': boundary.id,
-                #     'type': boundary.type,
-                #     'is_access_boundary': boundary.is_access_boundary,
-                #     'is_visual_boundary': boundary.is_visual_boundary,
-                #     'centroid_x': wall.get_centroid().x,
-                #     'centroid_y': wall.get_centroid().y,
-                #     'centroid_z': wall.get_centroid().z
-                # }
-
-                # self.building_graph.add_node('Boundary', node_id=boundary.id, features=features)
+              
 
                 rel = Creates(wall.id, boundary.id)
                 boundary.relationships.append(rel)
                 self.relationships[boundary.id].append(rel)
-                # self.building_graph.add_edge(wall.id, boundary.id, "OBJECT_CREATES_BOUNDARY", from_label='Object', to_label='Boundary')
 
-        if dimentions == '3d':
-            for deck in deck_objects:
-                # get the deck center plane geometry
-                deck_geometry = deck.get_centerplane_geometry()
-                # create a boundary for the deck
-                boundary = Boundary(
-                    name=deck.name,
-                    type='deck',
-                    geometry=deck_geometry,
-                    is_access_boundary=True,
-                    is_visual_boundary=True,
-                    base_item=deck,
-                    height=deck.get_height(),
-                    normal_vector=deck.get_centerplane_normal_vector(),
-                    adjacent_spaces=[]  # This will be filled later
-                )
-                self.boundaries[boundary.id] = boundary
-                # self.boundary_graph.add_node(boundary.id,
-                #                                 type=boundary.type,
-                #                                 geometry=boundary.geometry,
-                #                                 is_access_boundary=boundary.is_access_boundary,
-                #                                 is_visual_boundary=boundary.is_visual_boundary,
-                #                                 base_item=boundary.base_item,
-                #                                 height=boundary.height,
-                #                                 normal_vector=boundary.normal_vector, 
-                #                                 centroid_x=deck.get_centroid().x,
-                #                                 centroid_y=deck.get_centroid().y,
-                #                                 centroid_z=deck.get_centroid().z)
-                # # add boundary_id to the decks boundary_id attribute
-                # deck.boundary_id = boundary.id
+       
+        for deck in deck_objects:
+            # get the deck center plane geometry
+            deck_geometry = deck.get_centerplane_geometry()
+            # create a boundary for the deck
+            boundary = Boundary(
+                name=deck.name,
+                type='deck',
+                geometry=deck_geometry,
+                is_access_boundary=True,
+                is_visual_boundary=True,
+                base_item=deck,
+                height=deck.get_height(),
+                normal_vector=deck.get_centerplane_normal_vector(),
+                adjacent_spaces=[]  # This will be filled later
+            )
+            self.boundaries[boundary.id] = boundary
 
-                # features = {
-                #     'boundary_id': boundary.id,
-                #     'type': boundary.type,
-                #     'is_access_boundary': boundary.is_access_boundary,
-                #     'is_visual_boundary': boundary.is_visual_boundary,
-                #     'centroid_x': deck.get_centroid().x,
-                #     'centroid_y': deck.get_centroid().y,
-                #     'centroid_z': deck.get_centroid().z
-                # }
-
-                # self.building_graph.add_node('Boundary', node_id=boundary.id, features=features)
-
-                # add relatinoship between the deck and the boundary
-                rel = Creates(deck.id, wall.id)
-                boundary.relationships.append(rel)
-                self.relationships[boundary.id].append(rel)
-                # self.building_graph.add_edge(deck.id, boundary.id, "OBJECT_CREATES_BOUNDARY", from_label='Object', to_label='Boundary')
-                # Don't process decks
+            # add relatinoship between the deck and the boundary
+            rel = Creates(deck.id, wall.id)
+            boundary.relationships.append(rel)
+            self.relationships[boundary.id].append(rel)
+            # self.building_graph.add_edge(deck.id, boundary.id, "OBJECT_CREATES_BOUNDARY", from_label='Object', to_label='Boundary')
+            # Don't process decks
                 
 
 
@@ -1839,210 +1744,9 @@ class Model:
 
         from topologicpy.CellComplex import CellComplex
         from topologicpy.Cell import Cell
-        space_counter = 0
-        # if dimentions == '2d':
-
-
-
-        #     # Function to cut a line at given points
-        #     from shapely.geometry import Polygon, LineString, Point
-        #     from shapely.ops import linemerge
-
-        #     def cut_line_at_points(line, points):
-        #         # First coords of line
-        #         coords = list(line.coords)
-
-        #         # Keep list coords where to cut (cuts = 1)
-        #         cuts = [0] * len(coords)
-        #         cuts[0] = 1
-        #         cuts[-1] = 1
-
-        #         # Add the coords from the points
-        #         coords += [list(p.coords)[0] for p in points]    
-        #         cuts += [1] * len(points)        
-
-        #         # Calculate the distance along the line for each point    
-        #         dists = [line.project(Point(p)) for p in coords]    
-        #         # sort the coords/cuts based on the distances    
-        #         # see http://stackoverflow.com/questions/6618515/sorting-list-based-on-values-from-another-list    
-        #         coords = [p for (d, p) in sorted(zip(dists, coords))]    
-        #         cuts = [p for (d, p) in sorted(zip(dists, cuts))]          
-
-        #         # generate the Lines    
-        #         #lines = [LineString([coords[i], coords[i+1]]) for i in range(len(coords)-1)]    
-        #         lines = []        
-
-        #         for i in range(len(coords)-1):    
-        #             if cuts[i] == 1:    
-        #                 # find next element in cuts == 1 starting from index i + 1   
-        #                 j = cuts.index(1, i + 1)    
-        #                 lines.append(LineString(coords[i:j+1]))            
-
-        #         return lines
-
-
-        #     # # Step 1: Find and normalize unique cycles
-        #     # all_cycles = list(nx.simple_cycles(self.boundary_graph))
-        #     # unique_cycles = deduplicate_cycles_by_nodes(all_cycles)
-
-        #     # find basis_cycles in the boundary graph
-        #     unique_cycles = list(nx.cycle_basis(self.boundary_graph))
-
-        #     print(f"Found {len(unique_cycles)} cycles in the boundary graph.")
-        #     for cycle in unique_cycles:
-        #         # determine if the cycle is a valid space by checking if the normal vectors of the boundaries are consistent
-        #         cycle_boundaries = [self.boundaries[b_id] for b_id in cycle]
-        #         if not cycle_boundaries:
-        #             continue
-        #         # check if you plot the bottom edges of the boundaries in the cycle they form a closed polygon
-        #         bottom_edges = [boundary.get_bottom_edge() for boundary in cycle_boundaries]
-        #         if not bottom_edges:
-        #             continue
-        #         # Check if the bottom edges form a closed polygon
-        #         edge_lines = []
-        #         for edge in bottom_edges:
-        #             start = edge['start_point']
-        #             end = edge['end_point']
-        #             edge_lines.append(LineString([start, end]))
-        #         # Create a polygon from the bottom edges by extracting their start and end points and combining them as vertices
-
-        #         # edge_vertices = [edge['start_point'] for edge in bottom_edges] + [edge['end_point'] for edge in bottom_edges]
-        #         # edge_vertices_ordered = Geometry.order_vertices_by_angle(edge_vertices)
-        #         # # add the first vertex to the end to close the polygon
-        #         # if edge_vertices_ordered[0] != edge_vertices_ordered[-1]:
-        #         #     edge_vertices_ordered.append(edge_vertices_ordered[0])
-
-        #         # # combined_line = LineString(edge_vertices_ordered)
-        #         # combined_line = linemerge(edge_lines)
-        #         # Check if the combined line is closed
-
-        #         # turn edge lines into a topologicpy Edge object
-
-        #         topologic_edges = []
-        #         for edge in edge_lines:
-        #             s_v = Vertex.ByCoordinates(x=edge.coords[0][0], y=edge.coords[0][1], z=edge.coords[0][2])
-        #             e_v = Vertex.ByCoordinates(x=edge.coords[1][0], y=edge.coords[1][1], z=edge.coords[1][2])
-        #             topologic_edges.append(Edge.ByStartVertexEndVertex(s_v, e_v))
-
-        #         face = Face.ByEdges(topologic_edges, tolerance=0.01)
-
-        #         if face:
-
-
-        #             cell = Cell.ByThickenedFace(face, thickness=max([boundary.height for boundary in cycle_boundaries]))
-        #             # Create geometry from the cell
-        #             geometry = Geometry.from_topology(cell)
-        #             space = Space(
-        #                 name="Space {}".format(space_counter),
-        #                 geometry=geometry,
-        #                 boundaries=cycle_boundaries,
-        #                 area=Face.Area(face) # Assuming area as a proxy for area in 2D
-        #             )
-
-        #             cell_dict = Topology.Dictionary(cell)
-        #             cell_dict = Dictionary.SetValueAtKey(cell_dict, 'space_id', space.id)
-        #             cell = Topology.SetDictionary(cell, cell_dict)
-        #             space.topology = cell
-
-        #             self.spaces[space.id] = space
-        #             space_counter += 1
-
-        #             # Add the space to the building graph
-        #             features = {
-        #                 'name': space.name,
-        #                 'volume': space.geometry.compute_volume(),
-        #                 'centroid_x': space.geometry.get_centroid().x,
-        #                 'centroid_y': space.geometry.get_centroid().y,
-        #                 'centroid_z': space.geometry.get_centroid().z
-        #             }
-        #             self.building_graph.add_node('Space', node_id=space.id, features=features)
-
-        #             # add relationship between bounds and spaces
-        #             for boundary in space.boundaries:
-        #                 rel = Creates(boundary.id, space.id)
-        #                 boundary.relationships.append(rel)
-        #                 self.relationships[boundary.id].append(rel)
-        #                 self.building_graph.add_edge(boundary.id, space.id, "BOUNDARY_CREATES_SPACE", from_label='Boundary', to_label='Space')
-
-
-        #         else:
-        #             # see if we can heal the boundaries by trimming them to form a closed polygon
-        #             print(f"Cycle {cycle} does not form a valid polygon, attempting to heal boundaries...")
-        #             # Attempt to heal boundaries by extending edges to form a closed polygon
-        #             edge_graph = nx.Graph()
-        #             points = []
-        #             cleaned_edges = {i: edge for i, edge in enumerate(edge_lines)}
-        #             for i in range(len(edge_lines)):
-        #                 for j in range(len(edge_lines)):
-        #                     edge = cleaned_edges[i]
-        #                     other_edge = cleaned_edges[j]
-        #                     if edge == other_edge:
-        #                         continue
-        #                     if edge.intersects(other_edge):
-        #                         intersection = edge.intersection(other_edge)
-        #                         if isinstance(intersection, Point):
-        #                             # split the edge at the intersection point
-        #                             cut_lines = cut_line_at_points(edge, [intersection])
-
-        #                             # find the largest line segment
-        #                             largest_line = max(cut_lines, key=lambda l: l.length)
-        #                             cleaned_edges[i]=largest_line
-        #                         elif isinstance(intersection, LineString):
-        #                             # If intersection is a line, take its endpoints
-        #                             continue
-
-        #                     else:
-        #                         continue # No intersection, keep original edge
-        #             # get edges as a list
-        #             cleaned_edges = list(cleaned_edges.values())
-        #             topologic_edges = []
-        #             for edge in cleaned_edges:
-        #                 s_v = Vertex.ByCoordinates(x=edge.coords[0][0], y=edge.coords[0][1], z=edge.coords[0][2])
-        #                 e_v = Vertex.ByCoordinates(x=edge.coords[1][0], y=edge.coords[1][1], z=edge.coords[1][2])
-        #                 topologic_edges.append(Edge.ByStartVertexEndVertex(s_v, e_v))
-
-        #             face = Face.ByEdges(topologic_edges, tolerance=0.01, silent=True)
-        #             if face:
-        #                 space_height = max([boundary.height for boundary in cycle_boundaries])
-        #                 cell = Cell.ByThickenedFace(face, thickness=space_height)
-
-        #                 # Create geometry from the cell
-        #                 geometry = Geometry.from_topology(cell)
-        #                 space = Space(
-        #                     name="Space {}".format(space_counter),
-        #                     boundaries=cycle_boundaries,
-        #                     area=Face.Area(face),
-        #                     geometry=geometry,  # Assuming area as a proxy for area in 2D
-        #                 )
-
-        #                 cell_dict = Topology.Dictionary(cell)
-        #                 cell_dict = Dictionary.SetValueAtKey(cell_dict, 'space_id', space.id)
-        #                 cell = Topology.SetDictionary(cell, cell_dict)
-        #                 space.topology = cell
-
-        #                 self.spaces[space.id] = space
-        #                 space_counter += 1
-
-        #                 # Add the space to the building graph
-        #                 features = {
-        #                     'name': space.name,
-        #                     'volume': space.geometry.compute_volume(),
-        #                     'centroid_x': space.geometry.get_centroid().x,
-        #                     'centroid_y': space.geometry.get_centroid().y,
-        #                     'centroid_z': space.geometry.get_centroid().z
-        #                 }  
-
-        #                 self.building_graph.add_node('Space', node_id=space.id, features=features)
-
-        #                 # add relationship between bounds and spaces
-        #                 for boundary in space.boundaries:
-        #                     rel = Creates(boundary.id, space.id)
-        #                     boundary.relationships.append(rel)
-        #                     self.relationships[boundary.id].append(rel)
-        #                     self.building_graph.add_edge(boundary.id, space.id, "BOUNDARY_CREATES_SPACE", from_label='Boundary', to_label='Space')
-
-        # elif dimentions == '3d':
         from itertools import combinations
+
+        space_counter = 0
         def process_face_combo(combo):
             # Local import of Face and Cell if needed, or pass them as globals depending on your env
             try:
@@ -2107,35 +1811,6 @@ class Model:
         cells = Topology.Cells(cc)
 
         for cell in cells:
-
-        # # Step 1: Find all combinations of 4+ faces
-        # all_combinations = []
-        # for r in range(5, 15):
-        #     for combo in combinations(topologic_faces, r):
-        #         all_combinations.append(combo)
-        # print(f"Found {len(all_combinations)} combinations of 4+ faces.")
-        # # Step 2: Check if each combination forms a closed volume
-        # magnitudes = []
-        # for combo in all_combinations:
-
-        #     # determine if all faces in the combo have normal vectors that point inward
-        #     normals = [Face.Normal(face) for face in combo]
-
-        #     normals = np.array(normals)
-
-        #     net = np.sum(normals, axis=0)
-
-        #     magnitude = np.linalg.norm(net)
-        #     magnitudes.append(magnitude)
-        #     if magnitude > 2:
-        #         # print(f"Combination {combo} does not form a closed volume, skipping...")
-        #         continue
-
-
-        #     cell = Cell.ByFaces(list(combo), tolerance=1.0, silent=True)
-
-        #     if cell:
-            # Create geometry from the cell
             geometry = Geometry.from_topology(cell)
 
             faces = Topology.Faces(cell)
