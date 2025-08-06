@@ -285,12 +285,14 @@ def plot_shapely_geometries(geometries, color='black'):
     plt.show()
 
 
-def plot_topologic_objects(objects: List):
+def plot_topologic_objects(objects: List, showVertices=True):
     from topologicpy.Topology import Topology
 
     Topology.Show(
         objects,
-        renderer="browser"
+        renderer="browser",
+        showVertices=showVertices,
+        vertexSize=5
     )
 
 
@@ -550,3 +552,29 @@ def extract_edge_points(edge, num_points=50):
     except Exception as e:
         print(f"Error extracting edge points: {e}")
         return []
+
+
+def topology_to_dict(topology):
+    """Convert a Topology object to a dictionary representation."""
+    from topologicpy.Topology import Topology
+    from topologicpy.Dictionary import Dictionary
+    
+    topo_dict = Topology.Dictionary(topology)
+
+    return Dictionary.PythonDictionary(topo_dict)
+
+def transfer_topologic_dict(topology, target_topology):
+    """
+    Transfer a Topology dictionary to another Topology object.
+    
+    Args:
+        topology: Source Topology object
+        target_topology: Target Topology object to transfer the dictionary to
+    """
+    from topologicpy.Topology import Topology
+    from topologicpy.Dictionary import Dictionary
+    
+    topo_dict = Topology.Dictionary(topology)
+    Topology.AddDictionary(target_topology, topo_dict)
+    
+    return target_topology
