@@ -74,6 +74,42 @@ class BaseItem:
         self.attributes.centroid = self.geometry.get_centroid()
         self.attributes.volume = self.geometry.compute_volume()
 
+    @classmethod
+    def from_topology(cls, topology) -> "BaseItem":
+        """Create a BaseItem from a Topology object."""
+        from hierarchical.utils import topology_to_dict
+
+        type = cls.__name__
+        
+        attributes = topology_to_dict(topology)
+
+        geom = Geometry.from_topology(topology)
+        return cls(name=name, type=type, geometry=geom, **kwargs)
+
+    @property
+    def topologic(self) -> Any:
+        """
+        Get the Topology representation of this item.
+        
+        Returns:
+            The Topology object representing this item.
+        """
+        from topologicpy.Dictionary import Dictionary
+        from topologicpy.Topology import Topology
+        topologic_geometry = self.geometry.topologic
+
+        python_dict = {
+            "name": self.name,
+            "type": self.type,
+            "id": self.id
+            }
+        topo_dict = Dictionary.ByPythonDictionary(python_dict)
+        
+        topo_topology_with_dict = Topology.AddDictionary(topologic_geometry, topo_dict)
+
+        return topo_topology_with_dict
+
+
 
     @staticmethod
     def combine_geometries(geometries: Tuple[Geometry, ...]) -> Geometry:
@@ -427,7 +463,31 @@ class BaseItem:
         )
         
         return
+        
+    def inherit_relationships_from(self, other: 'BaseItem'):
+        """
+        Inherit all relationships from another item.
+        
+        Args:
+            other: The other BaseItem to inherit relationships from
+        """
+        if not hasattr(self, "relationships"):
+            self.relationships = []
 
+        other_id = other.id
+
+        for rel in other.relationships:
+            # Create a new relationship with self replacing the other item in the relationship
+            if rel.source == other_id:
+                new_rel = deepcopy(rel)
+                new_rel.source = self.id
+                self.relationships.append(new_rel)
+            elif rel.target == other_id:
+                new_rel = deepcopy(rel)
+                new_rel.target = self.id
+                self.relationships.append(new_rel)
+        
+        return
     
     
     def convert_units(self, target_unit: UnitSystem, in_place: bool = True) -> Optional['BaseItem']:

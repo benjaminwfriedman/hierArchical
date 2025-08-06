@@ -119,6 +119,7 @@ class BaseDeckFrame(ParametricComponent, ABC):
                 rim_thickness = front_rim.ACTUAL_WIDTH
                 front_rim.name = f"{self.name}_front_rim_L{layer+1}_seg_{i+1}"
                 front_rim.rotate_x(math.pi/2, [0, 0, 0])
+                front_rim.move(dy=front_rim.attributes.height)
                 front_rim.move(dx=i * self.MAX_RIM_LENGTH, dy=y_offset)
                 elements.append(front_rim)
                 
@@ -126,7 +127,7 @@ class BaseDeckFrame(ParametricComponent, ABC):
                 back_rim = self.lumber_class(length=segment_length, species=species)
                 back_rim.name = f"{self.name}_back_rim_L{layer+1}_seg_{i+1}"
                 back_rim.rotate_x(math.pi/2, [0, 0, 0])
-                back_rim.move(dx=i * self.MAX_RIM_LENGTH, dy=width - rim_thickness * (layer + 1))
+                back_rim.move(dx=i * self.MAX_RIM_LENGTH, dy=width - rim_thickness * (layer))
                 elements.append(back_rim)
         
         # Create end rim boards

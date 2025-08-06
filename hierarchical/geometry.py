@@ -388,6 +388,9 @@ class Geometry:
         """
         import numpy as np
         from topologicpy.Vertex import Vertex
+        from topologicpy.Face import Face
+        from topologicpy.Topology import Topology
+        from topologicpy.CellComplex import CellComplex
         
         tolerance = 1e-6
 
@@ -428,9 +431,47 @@ class Geometry:
         geom = cls()
         geom._topologic_topology = topology
         geom._topologic_generated = True
-        
-        return geom
 
+        # create mesh data from topology
+        vertices = []
+        faces = []
+        if Topology.IsInstance(topology, "Face"):
+            face_vertices = Topology.Vertices(topology)
+            if len(face_vertices) < 3:
+                return None
+            face_indices = []
+            for vertex in face_vertices:
+                x, y, z = Vertex.Coordinates(vertex)
+                # Check if vertex already exists
+                if (x, y, z) not in vertices:
+                    vertices.append((x, y, z))
+                face_indices.append(vertices.index((x, y, z)))
+            # Triangulate the face
+            triangles = triangulate_face_indices(face_indices, triangulation_method="fan")
+            for triangle in triangles:
+                faces.append(triangle)
+
+        elif Topology.IsInstance(topology, "Cell") or Topology.IsInstance(topology, "CellComplex"):
+            for face in Topology.Faces(topology):
+                face_vertices = Topology.Vertices(face)
+                if len(face_vertices) < 3:
+                    continue
+
+                face_indices = []
+                for vertex in face_vertices:
+                    x, y, z = Vertex.Coordinates(vertex)
+                    # Check if vertex already exists
+                    if (x, y, z) not in vertices:
+                        vertices.append((x, y, z))
+                    face_indices.append(vertices.index((x, y, z)))
+                # Triangulate the face  
+                triangles = triangulate_face_indices(face_indices, triangulation_method="fan")
+                for triangle in triangles:
+                    faces.append(triangle)
+
+        geom._mesh_data = {"vertices": vertices, "faces": faces}
+        geom._mesh_generated = True
+        return geom
 
     @classmethod
     def from_stl(cls, stl_path: Union[str, Path]) -> "Geometry":

@@ -12,13 +12,13 @@ Parametric wall objects - complete wall assemblies.
 from typing import Dict, List
 from hierarchical.catalog.base import ParametricObject, Parameter
 from hierarchical.catalog.components.wall_frames import WallFrame2X4, WallFrame2X6
-from hierarchical.items import Component
+from hierarchical.items import Component, Wall
 from hierarchical.catalog.elements.lumber import PlywoodSheet_0_25
 from hierarchical.catalog.components.sheathing import PlywoodSheathing_0_5
 from hierarchical.catalog.components.drywall_assemblies import BasicDryWallAssembly_0_25
 import math
 
-class ExteriorWall(ParametricObject):
+class ExteriorWall(ParametricObject, Wall):
     """Complete exterior wall assembly with frame, sheathing, and insulation"""
     
     @classmethod
@@ -152,7 +152,7 @@ class ExteriorWall(ParametricObject):
         )
 
 
-class InteriorWall(ParametricObject):
+class InteriorWall(ParametricObject, Wall):
     """Complete interior wall assembly"""
     
     @classmethod
@@ -252,7 +252,7 @@ class InteriorWall(ParametricObject):
         return components
     
 
-class ShearWall(ParametricObject):
+class ShearWall(ParametricObject, Wall):
     """Shear wall assembly with structural sheathing"""
     
     @classmethod
