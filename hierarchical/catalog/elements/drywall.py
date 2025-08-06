@@ -88,7 +88,8 @@ def create_drywall_classes():
             'THICKNESS': thickness,
             'TYPE': dtype,
             '__doc__': f"{dtype} drywall sheet - {thickness}\" thick\n"
-                       f"X=length(default 8ft), Y=width(4ft), Z=thickness({thickness}\")"
+                       f"X=length(default 8ft), Y=width(4ft), Z=thickness({thickness}\")",
+            '__module__': __name__  # Fix pickle support
         })
         
         classes[class_name] = cls

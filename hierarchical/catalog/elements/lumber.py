@@ -138,7 +138,8 @@ def create_lumber_classes():
             'ACTUAL_WIDTH': width_inches / 12.0,   # Z-axis (shortest)
             'ACTUAL_HEIGHT': height_inches / 12.0, # Y-axis (middle)
             'LUMBER_TYPE': nominal,
-            '__doc__': f"Standard {nominal} lumber (actual: {width_inches}\" x {height_inches}\")\nX=length, Y=height({height_inches}\"), Z=width({width_inches}\")"
+            '__doc__': f"Standard {nominal} lumber (actual: {width_inches}\" x {height_inches}\")\nX=length, Y=height({height_inches}\"), Z=width({width_inches}\")",
+            '__module__': __name__  # Fix pickle support
         })
         
         classes[class_name] = cls
@@ -162,7 +163,8 @@ def create_sheet_classes():
             cls = type(class_name, (BaseSheet,), {
                 'THICKNESS': thickness,
                 'MATERIAL': material,
-                '__doc__': f"{material} sheet - {thickness}\" thick\nX=length(8ft), Y=width(4ft), Z=thickness({thickness}\")"
+                '__doc__': f"{material} sheet - {thickness}\" thick\nX=length(8ft), Y=width(4ft), Z=thickness({thickness}\")",
+                '__module__': __name__  # Fix pickle support
             })
             
             classes[class_name] = cls
