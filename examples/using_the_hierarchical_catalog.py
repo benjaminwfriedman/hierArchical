@@ -26,6 +26,7 @@ from hierarchical.catalog.objects.walls import ExteriorWall, InteriorWall
 from hierarchical.catalog.objects.decks import WoodFramedDeck
 from hierarchical.catalog.objects.doors import SwingDoor, SlidingDoor, PocketDoor
 from hierarchical.utils import plot_items
+from hierarchical.abstractions import Model
 
 import math
 
@@ -183,6 +184,8 @@ objects.extend([
     ceiling_deck
 ])
 
+# model = Model.from_objects("4 Room Building Model", objects)
+
 # plot_items(objects, show_coords=False)
 
 # build model
@@ -190,13 +193,13 @@ if __name__ == '__main__':
     from hierarchical.abstractions import Model
     from hierarchical.utils import print_parts_report
     
-    print_parts_report(objects)
+    # print_parts_report(objects)
     
     model = Model.from_objects("4 Room Building Model", objects)
         
 
-    print("Q: What spaces are in the model?")
-    print(model.ask("What spaces are in the model?"))
+    print("Q: What unique elements are in the model?")
+    print(model.ask("What unique elements are in the model?"))
 
     model.show()
     model.show_building_graph()
