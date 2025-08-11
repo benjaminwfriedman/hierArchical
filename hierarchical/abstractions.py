@@ -1,6 +1,6 @@
 from tqdm import tqdm
 from hierarchical.items import Element, Component, Wall, Deck, Window, Door, Object, BaseItem
-from hierarchical.relationships import AdjacentTo, Relationship, Creates
+from hierarchical.relationships import AdjacentTo, Relationship, Creates, Supports, SupportedBy, FlowsTo, FlowsFrom, Above, Below, InFrontOf, Behind, LeftOf, RightOf, IsPartOf, Contains 
 from hierarchical.geometry import Geometry
 from hierarchical.helpers import test_healing_validation
 from collections import defaultdict
@@ -603,6 +603,10 @@ class BuildingGraph(Graph):
         self.conn.execute("CREATE REL TABLE IF NOT EXISTS OBJECT_ADJACENT_TO(FROM Object TO Object, type STRING)")
         self.conn.execute("CREATE REL TABLE IF NOT EXISTS OBJECT_EMBEDDED_IN(FROM Object TO Object, type STRING)")
         self.conn.execute("CREATE REL TABLE IF NOT EXISTS OBJECT_EMBEDS(FROM Object TO Object, type STRING)")
+        self.conn.execute("CREATE REL TABLE IF NOT EXISTS OBJECT_CONTAINS_COMPONENT(FROM Object TO Component, type STRING)")
+        self.conn.execute("CREATE REL TABLE IF NOT EXISTS COMPONENT_IS_PART_OF(FROM Component TO Object, type STRING)")
+        self.conn.execute("CREATE REL TABLE IF NOT EXISTS COMPONENT_CONTAINS_ELEMENT(FROM Component TO Element, type STRING)")
+        self.conn.execute("CREATE REL TABLE IF NOT EXISTS ELEMENT_IS_PART_OF(FROM Element TO Component, type STRING)")
         self.conn.execute("CREATE REL TABLE IF NOT EXISTS BOUNDARY_ADJACENT_TO(FROM Boundary TO Boundary, type STRING)")
         self.conn.execute("CREATE REL TABLE IF NOT EXISTS OBJECT_CREATES_BOUNDARY(FROM Object TO Boundary, type STRING)")
         self.conn.execute("CREATE REL TABLE IF NOT EXISTS BOUNDARY_CREATES_SPACE(FROM Boundary TO Space, type STRING)")
@@ -644,8 +648,24 @@ class Model:
                 model.elements[obj.id] = obj
             elif isinstance(obj, Component):
                 model.components[obj.id] = obj
+                for item in obj.sub_items:
+                    if isinstance(item, Element):
+                        model.elements[item.id] = item
             elif isinstance(obj, Object):
                 model.objects[obj.id] = obj
+                for item in obj.sub_items:
+                    if isinstance(item, Element):
+                        model.elements[item.id] = item
+                    elif isinstance(item, Component):
+                        model.components[item.id] = item
+                        for sub_item in item.sub_items:
+                            if isinstance(sub_item, Element):
+                                model.elements[sub_item.id] = sub_item
+                            elif isinstance(sub_item, Component):
+                                model.components[sub_item.id] = sub_item
+                                for sub_sub_item in sub_item.sub_items:
+                                    if isinstance(sub_sub_item, Element):
+                                        model.elements[sub_sub_item.id] = sub_sub_item
 
         """
         Add object ids as nodes in the graph and enrich it with features about the nodes like:
@@ -672,6 +692,36 @@ class Model:
             }
 
             model.building_graph.add_node("Object", node_id=obj.id, **features)
+            for component in obj.sub_items:
+                if isinstance(component, Component):
+                    model.building_graph.add_node("Component", node_id=component.id, type=component.type,
+                                                  volume=component.geometry.compute_volume() if component.geometry else 0.0,
+                                                  centroid_x=component.get_centroid().x,
+                                                  centroid_y=component.get_centroid().y,
+                                                  centroid_z=component.get_centroid().z)
+                    model.building_graph.add_edge(obj.id, component.id, "OBJECT_CONTAINS_COMPONENT", from_label="Object", to_label="Component")
+                    model.building_graph.add_edge(component.id, obj.id, "COMPONENT_IS_PART_OF", from_label="Component", to_label="Object")
+
+                    # add relationship to relationships
+                    model.relationships[obj.id].append(Contains(source=obj.id, target=component.id))
+                    model.relationships[component.id].append(IsPartOf(source=component.id, target=obj.id))
+
+
+            for element in component.sub_items:
+                if isinstance(element, Element):
+                    model.building_graph.add_node("Element", node_id=element.id, type=element.type,
+                                                    volume=element.geometry.compute_volume() if element.geometry else 0.0,
+                                                    centroid_x=element.get_centroid().x,
+                                                    centroid_y=element.get_centroid().y,
+                                                    centroid_z=element.get_centroid().z)
+                    
+                    model.building_graph.add_edge(component.id, element.id, "COMPONENT_CONTAINS_ELEMENT", from_label="Component", to_label="Element")
+                    model.building_graph.add_edge(element.id, component.id, "ELEMENT_IS_PART_OF", from_label="Element", to_label="Component")
+
+                    # add relationship to relationships
+                    model.relationships[component.id].append(Contains(source=component.id, target=element.id))
+                    model.relationships[element.id].append(IsPartOf(source=element.id, target=component.id))
+
 
         model.create_object_adjacency_relationships(tolerance=0.001)
         model.create_object_embedded_relationships()  # Uses default 95% threshold
