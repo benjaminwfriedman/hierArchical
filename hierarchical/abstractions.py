@@ -692,35 +692,38 @@ class Model:
             }
 
             model.building_graph.add_node("Object", node_id=obj.id, **features)
-            for component in obj.sub_items:
-                if isinstance(component, Component):
-                    model.building_graph.add_node("Component", node_id=component.id, type=component.type,
-                                                  volume=component.geometry.compute_volume() if component.geometry else 0.0,
-                                                  centroid_x=component.get_centroid().x,
-                                                  centroid_y=component.get_centroid().y,
-                                                  centroid_z=component.get_centroid().z)
-                    model.building_graph.add_edge(obj.id, component.id, "OBJECT_CONTAINS_COMPONENT", from_label="Object", to_label="Component")
-                    model.building_graph.add_edge(component.id, obj.id, "COMPONENT_IS_PART_OF", from_label="Component", to_label="Object")
+            if obj.sub_items:
+                for component in obj.sub_items:
+                    if isinstance(component, Component):
+                        model.building_graph.add_node("Component", node_id=component.id, type=component.type,
+                                                    volume=component.geometry.compute_volume() if component.geometry else 0.0,
+                                                    centroid_x=component.get_centroid().x,
+                                                    centroid_y=component.get_centroid().y,
+                                                    centroid_z=component.get_centroid().z)
+                        model.building_graph.add_edge(obj.id, component.id, "OBJECT_CONTAINS_COMPONENT", from_label="Object", to_label="Component")
+                        model.building_graph.add_edge(component.id, obj.id, "COMPONENT_IS_PART_OF", from_label="Component", to_label="Object")
 
-                    # add relationship to relationships
-                    model.relationships[obj.id].append(Contains(source=obj.id, target=component.id))
-                    model.relationships[component.id].append(IsPartOf(source=component.id, target=obj.id))
+                        # add relationship to relationships
+                        model.relationships[obj.id].append(Contains(source=obj.id, target=component.id))
+                        model.relationships[component.id].append(IsPartOf(source=component.id, target=obj.id))
 
 
-            for element in component.sub_items:
-                if isinstance(element, Element):
-                    model.building_graph.add_node("Element", node_id=element.id, type=element.type,
-                                                    volume=element.geometry.compute_volume() if element.geometry else 0.0,
-                                                    centroid_x=element.get_centroid().x,
-                                                    centroid_y=element.get_centroid().y,
-                                                    centroid_z=element.get_centroid().z)
-                    
-                    model.building_graph.add_edge(component.id, element.id, "COMPONENT_CONTAINS_ELEMENT", from_label="Component", to_label="Element")
-                    model.building_graph.add_edge(element.id, component.id, "ELEMENT_IS_PART_OF", from_label="Element", to_label="Component")
+                for element in component.sub_items:
+                    if isinstance(element, Element):
+                        model.building_graph.add_node("Element", node_id=element.id, type=element.type,
+                                                        volume=element.geometry.compute_volume() if element.geometry else 0.0,
+                                                        centroid_x=element.get_centroid().x,
+                                                        centroid_y=element.get_centroid().y,
+                                                        centroid_z=element.get_centroid().z)
+                        
+                        model.building_graph.add_edge(component.id, element.id, "COMPONENT_CONTAINS_ELEMENT", from_label="Component", to_label="Element")
+                        model.building_graph.add_edge(element.id, component.id, "ELEMENT_IS_PART_OF", from_label="Element", to_label="Component")
 
-                    # add relationship to relationships
-                    model.relationships[component.id].append(Contains(source=component.id, target=element.id))
-                    model.relationships[element.id].append(IsPartOf(source=element.id, target=component.id))
+                        # add relationship to relationships
+                        model.relationships[component.id].append(Contains(source=component.id, target=element.id))
+                        model.relationships[element.id].append(IsPartOf(source=element.id, target=component.id))
+        else:
+            print(f"Object {obj_id} has no sub_items, skipping.")
 
 
         model.create_object_adjacency_relationships(tolerance=0.001)
@@ -732,6 +735,112 @@ class Model:
 
         return model
 
+    @classmethod
+    def from_ifc(cls, ifc_file: str):
+        """
+        Create a model from an IFC file.
+        """
+        import ifcopenshell
+        import ifcopenshell.geom
+        import ifcopenshell.util.element
+        import ifcopenshell.util.placement
+        import ifcopenshell.util.shape
+        from pathlib import Path
+        from contextlib import contextmanager
+
+        from hierarchical.items import Wall, Deck, Window, Door
+
+        @contextmanager
+        def ifc_file_context(filepath):
+            ifc_file = None
+            try:
+                ifc_file = ifcopenshell.open(filepath)
+                yield ifc_file
+            finally:
+                if ifc_file:
+                    del ifc_file  # Don't use close(), just delete
+                    import gc
+                    gc.collect()
+
+        # Fix: ifc_file is a path string, use it directly
+        with ifc_file_context(ifc_file) as model:
+            if not model:
+                raise ValueError(f"Failed to open IFC file: {ifc_file}")
+
+            # Extract the building elements
+            element_types = ["IfcWall", "IfcSlab", "IfcWindow", "IfcDoor", "IfcColumn", "IfcBeam", "IfcSpace", "IFCWallStandardCase", "IfcPlate", "IFCCovering"]
+            objects = []
+            for element_type in element_types:
+                objects.extend(model.by_type(element_type))
+
+            # Convert IFC objects to hierarchical objects
+            hierarchical_objects = []
+            settings = ifcopenshell.geom.settings()
+            settings.set(settings.USE_WORLD_COORDS, True)
+            
+            for ifc_obj in objects:
+                try:
+                    # Create geometry
+                    shape = ifcopenshell.geom.create_shape(settings, ifc_obj)
+                    geom = shape.geometry
+
+                    if isinstance(geom, ifcopenshell.ifcopenshell_wrapper.Triangulation):
+                        vertices = geom.verts
+                        faces = geom.faces
+                        mesh_data = {
+                            "vertices": [(vertices[i], vertices[i+1], vertices[i+2]) for i in range(0, len(vertices), 3)],
+                            "faces": [(faces[i], faces[i+1], faces[i+2]) for i in range(0, len(faces), 3)]
+                        }
+                        geometry = Geometry(mesh_data=mesh_data)
+                    else:
+                        print(f"Unsupported geometry type for {ifc_obj.Name}: {type(geom)}")
+                        continue
+
+                    # Create appropriate hierarchical object
+                    obj_name = ifc_obj.Name or f"Unnamed_{ifc_obj.is_a()}"
+                    
+                    if ifc_obj.is_a("IfcWall"):
+                        wall = Wall(name=obj_name, type="Wall", geometry=geometry)
+                        hierarchical_objects.append(wall)
+                    elif ifc_obj.is_a("IFCWallStandardCase"):
+                        wall = Wall(name=obj_name, type="Wall", geometry=geometry)
+                        hierarchical_objects.append(wall)
+                    elif ifc_obj.is_a("IfcPlate"):
+                        wall = Wall(name=obj_name, type="Wall", geometry=geometry)
+                        hierarchical_objects.append(wall)
+                    elif ifc_obj.is_a("IfcSlab"):
+                        deck = Deck(name=obj_name, type="Deck", geometry=geometry)
+                        hierarchical_objects.append(deck)
+                    elif ifc_obj.is_a("IFCCovering"):
+                        deck = Deck(name=obj_name, type="Deck", geometry=geometry)
+                        hierarchical_objects.append(deck)
+                    elif ifc_obj.is_a("IfcWindow"):
+                        window = Window(name=obj_name, type="Window", geometry=geometry)
+                        hierarchical_objects.append(window)
+                    elif ifc_obj.is_a("IfcDoor"):
+                        door = Door(name=obj_name, type="Door", geometry=geometry)
+                        hierarchical_objects.append(door)
+                    elif ifc_obj.is_a("IfcColumn"):
+                        column = Column(name=obj_name, type="Column", geometry=geometry)
+                        hierarchical_objects.append(column)
+                    elif ifc_obj.is_a("IfcBeam"):
+                        beam = Beam(name=obj_name, type="Beam", geometry=geometry)
+                        hierarchical_objects.append(beam)
+                    elif ifc_obj.is_a("IfcSpace"):
+                        space = Space(name=obj_name, type="Space", geometry=geometry)
+                        hierarchical_objects.append(space)
+                    else:
+                        print(f"Unhandled IFC object type: {ifc_obj.is_a()}")
+                        
+                except Exception as e:
+                    print(f"Error processing {ifc_obj.Name or 'Unnamed'} ({ifc_obj.is_a()}): {e}")
+                    continue
+
+        # Fix: Move this outside the loop and context manager
+        hierarchical_model = cls.from_objects(name=Path(ifc_file).stem, objects=hierarchical_objects)
+        return hierarchical_model
+
+    ## TODO: Implement method to load from Speckle
     def create_object_adjacency_relationships(self, tolerance=0.01):
         """
         Add adjacency relationships between objects in the model to the building_graph.
@@ -970,7 +1079,7 @@ class Model:
             # get the faces from the CellComplex
             healed_faces = Topology.Faces(cc)
             
-            healed_faces_info = Topology.Inherit(healed_faces, topologic_faces, keys='id', exclusive=False, tolerance=0.1, silent=False)
+            healed_faces_info = Topology.Inherit(healed_faces, topologic_faces, keys='id', exclusive=True, tolerance=0.1, silent=False)
 
             
             '''
@@ -978,32 +1087,41 @@ class Model:
             If boundaries were split or merged in the process of created the cell complex, we will either add or
             remove boundaries from the model accordingly and link them back to their respective base objects
             '''
-         
+            ## Something happens there and we loose some boundaries
             healed_boundaries = []
+            # iterate through the healed topologic faces
             for face in healed_faces:
+                # get the face dictionary
                 face_dict = topology_to_dict(face)
+                # check if the face has an id
                 if 'id' in face_dict:
                     boundary_id = face_dict['id']
-                    for boundary in all_boundaries:
-                        if boundary.id == boundary_id:
-                            # create a boundary with information from the original boundary
-                            new_boundary = Boundary(
-                                name=boundary.name,
-                                type=boundary.type,
-                                is_access_boundary=boundary.is_access_boundary,
-                                is_visual_boundary=boundary.is_visual_boundary,
-                                geometry=Geometry.from_topology(face),
-                                base_item=boundary.base_item,
-                                )
+                    all_boundary_ids = [b.id for b in all_boundaries]
+                    # check if the boundary_id exists in all_boundary_ids
+                    if boundary_id in all_boundary_ids:
+                        for boundary in all_boundaries:
+                            if boundary.id == boundary_id:
+                                # create a boundary with information from the original boundary
+                                new_boundary = Boundary(
+                                    name=boundary.name,
+                                    type=boundary.type,
+                                    is_access_boundary=boundary.is_access_boundary,
+                                    is_visual_boundary=boundary.is_visual_boundary,
+                                    geometry=Geometry.from_topology(face),
+                                    base_item=boundary.base_item,
+                                    )
 
-                            new_boundary.inherit_relationships_from(boundary)
+                                new_boundary.inherit_relationships_from(boundary)
 
-                            healed_boundaries.append(new_boundary)
+                                healed_boundaries.append(new_boundary)
+                    else:
+                        print("Boundary ID not found in all boundaries:", boundary_id)
+                else:
+                    print(f"Face {face} does not have an id, skipping.")
 
 
             # put the new boundaries in the model
             self.boundaries = {b.id: b for b in healed_boundaries}
-
             return healed_boundaries
 
 
@@ -1859,6 +1977,8 @@ class Model:
             raise ValueError("No valid cell complex could be created.")
 
         cells = Topology.Cells(cc)
+
+        ## TODO: When load_from_ifc cells is empty [] 
 
         for cell in cells:
             geometry = Geometry.from_topology(cell)
