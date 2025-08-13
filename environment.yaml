@@ -36,4 +36,5 @@ dependencies:
     - pytest-mock
     - hypothesis
     - pytest-benchmark
+    - specklepy
     -e .  # Install hierarchical package in editable mode

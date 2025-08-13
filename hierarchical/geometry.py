@@ -473,6 +473,52 @@ class Geometry:
         geom._mesh_generated = True
         return geom
 
+    from specklepy.objects.geometry import Mesh
+    @classmethod
+    def from_speckle_mesh(cls, speckle_mesh:Mesh) -> "Geometry":
+        """
+        Create geometry from a Speckle mesh dictionary
+        
+        Args:
+            speckle_mesh: A Speckle Mesh object
+        """
+        verticies = speckle_mesh.vertices
+        # vertices from speckle mesh ar a flat list, convert to tuples
+        verticies = [tuple(verticies[i:i+3]) for i in range(0, len(verticies), 3)]
+
+        raw_faces = speckle_mesh.faces
+
+        # Parse faces that start with vertex count (like [3, 0, 1, 2, 3, 5, 6, 3, ...])
+        faces = []
+        i = 0
+        while i < len(raw_faces):
+            vertex_count = raw_faces[i]
+            if vertex_count == 3:  # Triangle
+                face_tuple = tuple(raw_faces[i+1:i+4])  # Get next 3 indices
+                faces.append(face_tuple)
+                i += 4  # Move past count + 3 vertices
+            elif vertex_count == 4:  # Quad (if you need to handle them)
+                # Convert quad to two triangles
+                v0, v1, v2, v3 = raw_faces[i+1:i+5]
+                faces.append((v0, v1, v2))
+                faces.append((v0, v2, v3))
+                i += 5  # Move past count + 4 vertices
+            else:
+                # Handle other polygon types or skip
+                i += vertex_count + 1
+
+        if not verticies or not faces:
+            raise ValueError("Speckle mesh must have vertices and faces")
+        
+        geom = cls()
+        geom._mesh_data = {"vertices": verticies, "faces": faces}
+        geom._mesh_generated = True
+        geom._mesh_to_opencascade(geom._mesh_data)
+        geom._mesh_to_topologic(geom._mesh_data)
+
+        return geom
+        
+
     @classmethod
     def from_stl(cls, stl_path: Union[str, Path]) -> "Geometry":
         """
