@@ -837,6 +837,34 @@ class Object(BaseItem):
             sub_items=tuple(sub_items),
             materials={}
         )
+    
+    def get_length(self) -> float:
+        """
+        Get the length of the object (longest horizontal dimension).
+        Returns the longest direction in either X or Y directions.
+        """
+        min_point, max_point = self.geometry.get_bbox()
+        x_length = float(max_point[0] - min_point[0])
+        y_length = float(max_point[1] - min_point[1])
+        return max(x_length, y_length)
+    def get_width(self) -> float:
+        """
+        Get the width of the object (shortest horizontal dimension).
+        Returns the longest direction in either X or Y directions.
+        """
+        min_point, max_point = self.geometry.get_bbox()
+        x_length = float(max_point[0] - min_point[0])
+        y_length = float(max_point[1] - min_point[1])
+        return min(x_length, y_length)
+    def get_height(self) -> float:
+        """
+        Get the width of the object (virtical dimension).
+        Returns the longest direction in either X or Y directions.
+        """
+        min_point, max_point = self.geometry.get_bbox()
+        z_length = float(max_point[2] - min_point[2])
+        return z_length
+
 
 @dataclass(slots=True)
 class Wall(Object):
@@ -1328,6 +1356,8 @@ class Wall(Object):
             return tuple(center_plane['normal'])
         
         return None
+
+    
     
     
                 
