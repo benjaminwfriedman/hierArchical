@@ -374,6 +374,10 @@ class Space:
     # A unique UUID
     id: str = field(default_factory=lambda: str(uuid4()))
 
+    # space attributes dictionary
+    attributes: Dict[str, any] = field(default_factory=dict)
+
+
     def centoid(self) -> Tuple[float, float, float]:
         """
         Calculate the centroid of the space based on its geometry.
@@ -440,6 +444,59 @@ class Graph(ABC):
         print(query)
         return node_id
 
+    def update_node(self, node_id: str, label: str = "Node", **attributes):
+        """
+        Update an existing node's attributes.
+        
+        Args:
+            node_id: The ID of the node to update
+            label: The label/type of the node (default: "Node")
+            **attributes: Key-value pairs of attributes to update
+        """
+        if not attributes:
+            print("No attributes provided for update")
+            return
+        
+        # Process attributes similar to add_node
+        flat_attrs = {}
+        for k, v in attributes.items():
+            if v is None:
+                continue
+            elif isinstance(v, np.generic):
+                flat_attrs[k] = v.item()
+            elif isinstance(v, dict):
+                for subk, subv in v.items():
+                    if subv is not None:
+                        if isinstance(subv, np.generic):
+                            subv = subv.item()
+                        flat_attrs[subk] = subv
+            else:
+                flat_attrs[k] = v
+        
+        if not flat_attrs:
+            print("No valid attributes to update")
+            return
+        
+        # Build SET clause
+        set_clauses = [f"n.{k} = {self._format_value(v)}" for k, v in flat_attrs.items()]
+        set_str = ", ".join(set_clauses)
+        
+        query = f"""
+        MATCH (n:{label} {{id: '{node_id}'}})
+        SET {set_str}
+        RETURN n
+        """
+        
+        try:
+            result = self.conn.execute(query)
+            if result.has_next():
+                updated_node = result.get_next()
+            else:
+                pass
+        except Exception as e:
+            print(f"Failed to update node: {e}")
+            print(f"Query: {query}")
+       
     def add_edge(self, from_id: str, to_id: str, rel_type: str, from_label: str = "Node", to_label: str = "Node", **attributes):
         """
         Add a relationship between two nodes by ID.
@@ -464,9 +521,13 @@ class Graph(ABC):
             return "true" if val else "false"
         return str(val)
 
-    def query_to_string(self, query: str) -> str:
+    def query_to_string(self, query: str, return_type: str = 'list') -> str:
         """
         Execute a raw Cypher query against the graph database and return the results as a string.
+        
+        Args:
+            query: Cypher query to execute
+            return_type: 'list' for line-separated results, 'dict' for column:value mapping
         """
         try:
             result = self.conn.execute(query)
@@ -474,13 +535,35 @@ class Graph(ABC):
             raise Exception(f"Query failed: {e}")
 
         if result.has_next():
-            rows = []
-            while result.has_next():
-                row = result.get_next()
-                rows.append(str(row))
-            return "\n".join(rows)
+            if return_type.lower() == 'dict':
+                # Get column names from the Kuzu result
+                columns = result.get_column_names()
+                rows = []
+                while result.has_next():
+                    # For dict format, return first row as key-value pairs
+                    row = result.get_next()
+                    row_dict = {}
+                    
+                    # Kuzu rows are typically lists/tuples, map to column names
+                    for i, column_name in enumerate(columns):
+                        value = row[i] if i < len(row) else None
+                        row_dict[column_name] = value
+
+                    rows.append(row_dict)
+                return ",".join(str(r) for r in rows)
+            
+            else:
+                # Default: return as line-separated list (current behavior)
+                rows = []
+                while result.has_next():
+                    row = result.get_next()
+                    rows.append(str(row))
+                return "\n".join(rows)
         else:
-            return "No results."
+            if return_type.lower() == 'dict':
+                return str({})
+            else:
+                return "No results."
 
     def query(self, query: str):
         """
@@ -592,9 +675,9 @@ class BuildingGraph(Graph):
         Create the building graph schema in the database.
         """
         # create node tables
-        self.conn.execute("CREATE NODE TABLE IF NOT EXISTS Space(id STRING PRIMARY KEY, name STRING, volume FLOAT, centroid_x FLOAT, centroid_y FLOAT, centroid_z FLOAT)")
+        self.conn.execute("CREATE NODE TABLE IF NOT EXISTS Space(id STRING PRIMARY KEY, name STRING, volume FLOAT, centroid_x FLOAT, centroid_y FLOAT, centroid_z FLOAT, omniclass_space_type STRING)")
         # create node tables for other object types
-        self.conn.execute("CREATE NODE TABLE IF NOT EXISTS Object(id STRING PRIMARY KEY, type STRING, volume FLOAT, centroid_x FLOAT, centroid_y FLOAT, centroid_z FLOAT)")
+        self.conn.execute("CREATE NODE TABLE IF NOT EXISTS Object(id STRING PRIMARY KEY, type STRING, volume FLOAT, centroid_x FLOAT, centroid_y FLOAT, centroid_z FLOAT, length FLOAT, width FLOAT, height FLOAT)")
         self.conn.execute("CREATE NODE TABLE IF NOT EXISTS Element(id STRING PRIMARY KEY, type STRING, volume FLOAT, centroid_x FLOAT, centroid_y FLOAT, centroid_z FLOAT)")
         self.conn.execute("CREATE NODE TABLE IF NOT EXISTS Component(id STRING PRIMARY KEY, type STRING, volume FLOAT, centroid_x FLOAT, centroid_y FLOAT, centroid_z FLOAT)")
         self.conn.execute("CREATE NODE TABLE IF NOT EXISTS Boundary(id STRING PRIMARY KEY, boundary_id STRING, type STRING, is_access_boundary BOOL, is_visual_boundary BOOL, centroid_x FLOAT, centroid_y FLOAT, centroid_z FLOAT)")
@@ -636,9 +719,8 @@ class Model:
         self.id = str(uuid.uuid4())  # Unique identifier for the model
         self.building_graph = BuildingGraph(db_path=f"./building_dbs/{self.id}_building_graph.db")  # Initialize the building graph
 
-
     @classmethod
-    def from_objects(cls, name, objects):
+    def from_objects(cls, name, objects, existing_spaces=None):
         """
         Create a model from a list of objects.
         """
@@ -680,7 +762,7 @@ class Model:
         for obj_id, obj in model.objects.items():
             # Attempt to extract geometric features if they exist
             features = {
-                "type": type(obj).__name__,  # class name, e.g., Wall, Door, etc.
+                "type": type(obj).__name__.lower(),  # class name, e.g., Wall, Door, etc.
                 # "length": getattr(obj, "length", None),
                 # "width": getattr(obj, "width", None),
                 # "height": getattr(obj, "height", None),
@@ -688,6 +770,9 @@ class Model:
                 "centroid_x": obj.get_centroid().x,
                 "centroid_y": obj.get_centroid().y,
                 "centroid_z": obj.get_centroid().z,
+                "length": obj.get_length(),
+                "width": obj.get_width(),
+                "height": obj.get_height()
                 # "object": obj  # preserve full object for further use
             }
 
@@ -695,7 +780,7 @@ class Model:
             if obj.sub_items:
                 for component in obj.sub_items:
                     if isinstance(component, Component):
-                        model.building_graph.add_node("Component", node_id=component.id, type=component.type,
+                        model.building_graph.add_node("Component", node_id=component.id, type=component.type.lower(),
                                                     volume=component.geometry.compute_volume() if component.geometry else 0.0,
                                                     centroid_x=component.get_centroid().x,
                                                     centroid_y=component.get_centroid().y,
@@ -710,7 +795,7 @@ class Model:
 
                 for element in component.sub_items:
                     if isinstance(element, Element):
-                        model.building_graph.add_node("Element", node_id=element.id, type=element.type,
+                        model.building_graph.add_node("Element", node_id=element.id, type=element.type.lower(),
                                                         volume=element.geometry.compute_volume() if element.geometry else 0.0,
                                                         centroid_x=element.get_centroid().x,
                                                         centroid_y=element.get_centroid().y,
@@ -729,8 +814,9 @@ class Model:
         model.create_object_adjacency_relationships(tolerance=0.001)
         model.create_object_embedded_relationships()  # Uses default 95% threshold
         model.infer_bounds()
-        model.infer_spaces()
+        model.infer_spaces(existing_spaces=existing_spaces)
         model.generate_adjacency_graph()
+        model.apply_ontologies()
 
 
         return model
@@ -768,13 +854,14 @@ class Model:
                 raise ValueError(f"Failed to open IFC file: {ifc_file}")
 
             # Extract the building elements
-            element_types = ["IfcWall", "IfcSlab", "IfcWindow", "IfcDoor", "IfcColumn", "IfcBeam", "IfcSpace", "IFCWallStandardCase", "IfcPlate", "IFCCovering"]
+            element_types = ["IfcWall", "IfcSlab", "IfcWindow", "IfcDoor", "IfcColumn", "IfcBeam", "IfcSpace", "IFCWallStandardCase", "IfcPlate", "IFCCovering", "IfcSpace"]
             objects = []
             for element_type in element_types:
                 objects.extend(model.by_type(element_type))
 
             # Convert IFC objects to hierarchical objects
             hierarchical_objects = []
+            hierarchical_spaces = []
             settings = ifcopenshell.geom.settings()
             settings.set(settings.USE_WORLD_COORDS, True)
             
@@ -827,8 +914,8 @@ class Model:
                         beam = Beam(name=obj_name, type="Beam", geometry=geometry)
                         hierarchical_objects.append(beam)
                     elif ifc_obj.is_a("IfcSpace"):
-                        space = Space(name=obj_name, type="Space", geometry=geometry)
-                        hierarchical_objects.append(space)
+                        space = Space(name=obj_name, geometry=geometry)
+                        hierarchical_spaces.append(space)
                     else:
                         print(f"Unhandled IFC object type: {ifc_obj.is_a()}")
                         
@@ -837,7 +924,7 @@ class Model:
                     continue
 
         # Fix: Move this outside the loop and context manager
-        hierarchical_model = cls.from_objects(name=Path(ifc_file).stem, objects=hierarchical_objects)
+        hierarchical_model = cls.from_objects(name=Path(ifc_file).stem, objects=hierarchical_objects, existing_spaces=hierarchical_spaces)
         return hierarchical_model
 
     ## TODO: Implement method to load from Speckle
@@ -1019,8 +1106,223 @@ class Model:
         if version == 'topologic':
             from hierarchical.utils import topology_to_dict
             from topologicpy.Face import Face
+            from topologicpy.Vertex import Vertex
+            from topologicpy.Cell import Cell
+            from topologicpy.Wire import Wire
             from topologicpy.CellComplex import CellComplex
+            from topologicpy.Topology import Topology
+            from topologicpy.Cluster import Cluster
+            from topologicpy.CSG import CSG
             from hierarchical.utils import transfer_topologic_dict
+            from topologicpy.Helper import Helper
+
+            def intersection_edges_from_faces(faces, tol=1e-4, angle_prune_degree=1.0, skip_near_parallel=False, use_bbox_prune=True, merge=False):
+                from itertools import combinations
+                from math import cos, pi
+                from topologicpy.CSG import CSG
+                from topologicpy.Topology import Topology
+                from topologicpy.Cluster import Cluster
+                from topologicpy.Face import Face
+                from topologicpy.Vector import Vector
+                from topologicpy.Wire import Wire
+
+                def _bbox_overlay(a, b, tol=1e-9):
+
+                    def _brute_force_bounding_box(face):
+                        vertices = Topology.Vertices(face)
+                        if not vertices:
+                            return None
+                        x = [Vertex.X(v) for v in vertices]
+                        y = [Vertex.Y(v) for v in vertices]
+                        z = [Vertex.Z(v) for v in vertices]
+
+                        min_x = min(x)
+                        max_x = max(x)
+                        min_y = min(y)
+                        max_y = max(y)
+                        min_z = min(z)
+                        max_z = max(z)
+
+                        # Create 8 corner vertices for the bounding box
+                        v1 = Vertex.ByCoordinates(min_x, min_y, min_z)  # Bottom-front-left
+                        v2 = Vertex.ByCoordinates(max_x, min_y, min_z)  # Bottom-front-right
+                        v3 = Vertex.ByCoordinates(max_x, max_y, min_z)  # Bottom-back-right
+                        v4 = Vertex.ByCoordinates(min_x, max_y, min_z)  # Bottom-back-left
+                        v5 = Vertex.ByCoordinates(min_x, min_y, max_z)  # Top-front-left
+                        v6 = Vertex.ByCoordinates(max_x, min_y, max_z)  # Top-front-right
+                        v7 = Vertex.ByCoordinates(max_x, max_y, max_z)  # Top-back-right
+                        v8 = Vertex.ByCoordinates(min_x, max_y, max_z)  # Top-back-left
+                        
+                        
+                        # create wires for the edges of the bounding box
+                        wires = [
+                            Wire.ByVertices([v1, v2]),
+                            Wire.ByVertices([v2, v3]),
+                            Wire.ByVertices([v3, v4]),
+                            Wire.ByVertices([v4, v1]),
+                            Wire.ByVertices([v5, v6]),
+                            Wire.ByVertices([v6, v7]),
+                            Wire.ByVertices([v7, v8]),
+                            Wire.ByVertices([v8, v5]),
+                            Wire.ByVertices([v1, v5]),
+                            Wire.ByVertices([v2, v6]),
+                            Wire.ByVertices([v3, v7]),
+                            Wire.ByVertices([v4, v8])
+                        ] 
+
+                        cell = Cell.ByWires(wires)
+
+                        
+
+                        return cell
+                    
+                    try:
+                        ca = Topology.BoundingBox(a, tolerance=0.0000001)
+                        cb = Topology.BoundingBox(b, tolerance=0.00000001)
+                        if not ca:
+                            ca = _brute_force_bounding_box(a)
+                        if not cb:
+                            cb = _brute_force_bounding_box(b)
+
+                        va = Topology.Vertices(ca)
+                        vb = Topology.Vertices(cb)
+
+                        ax = [Vertex.X(v) for v in va]
+                        ay = [Vertex.Y(v) for v in va]
+                        az = [Vertex.Z(v) for v in va]
+
+                        bx = [Vertex.X(v) for v in vb]
+                        by = [Vertex.Y(v) for v in vb]
+                        bz = [Vertex.Z(v) for v in vb]
+
+                        ax0, ax1 = min(ax), max(ax)
+                        ay0, ay1 = min(ay), max(ay)
+                        az0, az1 = min(az), max(az)
+
+                        bx0, bx1 = min(bx), max(bx)
+                        by0, by1 = min(by), max(by)
+                        bz0, bz1 = min(bz), max(bz)
+
+                        return (ax0 <= bx1 + tol and ax1 + tol >= bx0 and
+                                ay0 <= by1 + tol and ay1 + tol >= by0 and
+                                az0 <= bz1 + tol and az1 + tol >= bz0)
+                    except Exception as e:
+                        return False
+
+                # compute normals if possible 
+                normals = {}
+                for f in faces:
+                    try:
+                        normals[f] = Vector.Normalize(Face.Normal(f))
+                    except:
+                        normals[f] = None
+
+                # Threshold for near parallelism
+                cos_thresh = cos(angle_prune_degree * pi / 180.0)
+
+                collected_edges = []
+                for fa, fb in combinations(faces, 2):
+                    if use_bbox_prune and not _bbox_overlay(fa, fb):
+                        continue
+
+                    try:
+                        na, nb = normals[fa], normals[fb]
+                        if skip_near_parallel and na and nb:
+                            if abs(Vector.Dot(na, nb)) > cos_thresh:
+                                continue
+                    except:
+                        pass
+
+                    # intersection
+                    try:
+                        res = Topology.Intersect(fa, fb, tolerance=tol)
+                        if not res:
+                            continue
+                        if Topology.IsInstance(res, "Face"):
+                            es = Topology.Edges(res)
+                        elif Topology.IsInstance(res, "Edge"):
+                            es = [res]
+                        if es:
+                            collected_edges.extend(es)
+                    except Exception as e:
+                        print(f"Error computing intersection between faces: {e}")
+                        continue
+
+                if not collected_edges:
+                    return []
+                
+                if not merge:
+                    return collected_edges
+                
+                # Merge / Clean
+                try:
+                    merged = Topology.SelfMerge(Cluster.ByTopologies(collected_edges), tolerance=tol)
+                    if Topology.IsInstance(merged, "Cluster"):
+                        return Topology.Edges(merged) or []
+                    if Topology.IsInstance(merged, "Edge"):
+                        return [merged]
+                    
+                    # Best Effort Extraction
+
+                    return Topology.Edges(merged) or []
+                except Exception as e:
+                    return collected_edges
+
+
+                   
+                                                
+
+
+
+
+            def find_shared_edges_simple(faces):
+                    edge_to_faces = defaultdict(list)
+
+                    # get all edges
+                    all_edges = set()
+                    for face in faces:
+                        edges = Topology.Edges(face)
+                        for edge in edges:
+                            all_edges.add(edge)
+                    
+                    
+                    for edge in all_edges:
+                        edge_to_faces[edge] = []
+                        # Iterate through each face and check edges
+                        for face_idx, face in enumerate(faces):
+                            # Check if edge is a super topology of each face
+                            super_topologies = Topology.SuperTopologies(edge, face, 'Face')
+                            if super_topologies:
+                                edge_to_faces[edge].extend(super_topologies)
+                    
+                    # Analyze the results
+                    naked_edges = []
+                    shared_edges = []
+                    overlapping_edges = []
+                    
+                    for edge_key, face_indices in edge_to_faces.items():
+                        if len(face_indices) == 1:
+                            naked_edges.append((edge_key, face_indices[0]))
+                        elif len(face_indices) == 2:
+                            shared_edges.append((edge_key, face_indices))
+                        else:
+                            overlapping_edges.append((edge_key, face_indices))
+                    
+                    print(f"Naked edges: {len(naked_edges)}")
+                    print(f"Shared edges: {len(shared_edges)}")
+                    print(f"Overlapping edges: {len(overlapping_edges)}")
+                    
+                    # Show some examples
+                    if naked_edges:
+                        print(f"Example naked edge on face {naked_edges[0][1]}")
+                    if shared_edges:
+                        print(f"Example shared edge between faces {shared_edges[0][1]}")
+                    if overlapping_edges:
+                        print(f"Example overlapping edge on faces {overlapping_edges[0][1]}")
+                    
+                    return edge_to_faces
+
+
             topologic_faces = []
             all_boundaries = list(self.boundaries.values())
             
@@ -1036,26 +1338,28 @@ class Model:
                 topologic_faces.append(topologic_face)
             
 
-            # Desired Number of Vertices for each face (e.g. 4)
-            desired_n_verts = 4
+            # # Desired Number of Vertices for each face (e.g. 4)
+            # desired_n_verts = 4
 
-            # Maximum Allowed Number of Attemps to simplify the faces and reduce the nunmber of their vertices (e.g. 20)
-            max_attempts = 20
+            # # Maximum Allowed Number of Attemps to simplify the faces and reduce the nunmber of their vertices (e.g. 20)
+            # max_attempts = 20
 
-            simplified_faces = []
-            for f in topologic_faces:
-                n = len(Topology.Vertices(f))
-                tol = 0.0000001
-                m = 0
-                f_simplified = f
-                while n > desired_n_verts and m < max_attempts:
-                    f_simplified = Face.Simplify(f, tolerance=tol)
-                    f_simplified = transfer_topologic_dict(f, f_simplified)
-                    n = len(Topology.Vertices(f_simplified))
-                    tol = tol*10
-                    m = m + 1
+            # simplified_faces = []
+            # for f in topologic_faces:
+            #     n = len(Topology.Vertices(f))
+            #     tol = 0.0000001
+            #     m = 0
+            #     f_simplified = f
+            #     while n > desired_n_verts and m < max_attempts:
+            #         f_simplified = Face.Simplify(f, tolerance=tol)
+            #         f_simplified = transfer_topologic_dict(f, f_simplified)
+            #         n = len(Topology.Vertices(f_simplified))
+            #         tol = tol*10
+            #         m = m + 1
 
-                simplified_faces.append(f_simplified)
+            #     simplified_faces.append(f_simplified)
+
+            simplified_faces = topologic_faces
 
             print(" ")
             for f in simplified_faces:
@@ -1066,14 +1370,51 @@ class Model:
             cc = None
             offset = 0.5
             attempts = 0
-            max_attempts = 100
-
-            while cc == None and attempts < max_attempts:
+            max_attempts = 10
+            cell_complexes = []
+            while attempts < max_attempts:
                 expanded_faces = [transfer_topologic_dict(f, Face.ByOffset(f, offset=-offset)) for f in simplified_faces]
-                cc = CellComplex.ByFaces(expanded_faces, silent=True)
+                
+                # edges = intersection_edges_from_faces(expanded_faces, tol=0.001, angle_prune_degree=1.0, skip_near_parallel=True, use_bbox_prune=False, merge=False)
+
+                # if edges:
+                #     print("Found edges:", edges)
+                # wires = []
+                # for e in edges:
+                #     verts = Topology.Vertices(e)
+                #     wire = Wire.ByVertices(verts)
+                #     wires.append(wire)
+
+
+                try:
+                    cc = CellComplex.ByFaces(expanded_faces, silent=True)
+                    if Topology.IsInstance(cc, "CellComplex"):
+
+                        cells = Topology.Cells(cc)
+                        cell_volumns = [Cell.Volume(c) for c in cells]
+                        # get the mean volumn
+                        mean_volumn = sum(cell_volumns) / len(cell_volumns) if cell_volumns else 0
+                        # get the index of volumes that are greater than the mean volumn
+                        large_cells_indices = [i for i, v in enumerate(cell_volumns) if v > mean_volumn]
+                        # get the cells that are larger than the mean volumn
+                        large_cells = [cells[i] for i in large_cells_indices]
+
+                        if len(large_cells) > 2:
+                            # create a new cell complex with the large cells
+                            cc = CellComplex.ByCells(large_cells, silent=True)
+
+                            cell_complexes.append(cc)
+                
+                except Exception as e:
+                    pass
 
                 attempts += 1
                 offset += 0.5
+                print(f"attempt {attempts}")
+
+            n_cells = [len(Topology.Cells(c)) for c in cell_complexes]
+            cell_complexes = Helper.Sort(cell_complexes, n_cells)
+            cc = cell_complexes[0] 
 
             cc = Topology.RemoveCollinearEdges(cc, tolerance=0.001, silent=True)
             # get the faces from the CellComplex
@@ -1709,7 +2050,7 @@ class Model:
 
                 self.boundaries[boundary.id] = boundary
                 self.boundary_graph.add_node(boundary.id,
-                                             type=boundary.type,
+                                             type=boundary.type.lower(),
                                              geometry=boundary.geometry,
                                              is_access_boundary=boundary.is_access_boundary,
                                              is_visual_boundary=boundary.is_visual_boundary,
@@ -1756,7 +2097,7 @@ class Model:
 
                 self.boundaries[boundary.id] = boundary
                 self.boundary_graph.add_node(boundary.id,
-                                             type=boundary.type,
+                                             type=boundary.type.lower(),
                                              geometry=boundary.geometry,
                                              is_access_boundary=boundary.is_access_boundary,
                                              is_visual_boundary=boundary.is_visual_boundary,
@@ -1842,7 +2183,7 @@ class Model:
         # Add boundary info to the boundary graph and the building graph
         for i, boundary in enumerate(self.boundaries.values()):
             self.boundary_graph.add_node(boundary.id,
-                                        type=boundary.type,
+                                        type=boundary.type.lower(),
                                         geometry=boundary.geometry,
                                         is_access_boundary=boundary.is_access_boundary,
                                         is_visual_boundary=boundary.is_visual_boundary,
@@ -1901,7 +2242,7 @@ class Model:
 
 
     def infer_spaces(self, 
-                    # dimentions: str = "3d"
+                    existing_spaces: Optional[List[Space]] = None,
                     ) -> List[Space]:
         """
         Infer spaces by finding boundary cycles in the boundary graph (networkx) whose edges form closed loops.
@@ -2016,6 +2357,15 @@ class Model:
                 volume=Geometry.compute_volume(geometry)  # Assuming volume as a proxy for area in 3D
             )
 
+
+            # Check if the space overlaps with an existing space and apply the existing space's attributes
+            existing_space = next((s for s in existing_spaces if s.geometry.bbox_intersects(space.geometry, return_overlap_percent=True) > 0.8), None)
+
+            if existing_space:
+                print(f"Applying existing space attributes to inferred space: {existing_space.name}")
+                space.name = existing_space.name
+                
+
             cell_dict = Topology.Dictionary(cell)
             cell_dict = Dictionary.SetValueAtKey(cell_dict, 'space_id', space.id)
             cell = Topology.SetDictionary(cell, cell_dict)
@@ -2091,7 +2441,36 @@ class Model:
                 if neighbor_space_id is not None:
                     # Add an edge to the building graph
                     self.building_graph.add_edge(space.id, neighbor_space_id, 'SPACE_ADJACENT_TO', from_label='Space', to_label='Space')
+
+    def apply_ontologies(self):
+        """
+        Apply the provided ontology to the spaces in the model.
+        This will categorize spaces based on the ontology definitions.
+        
+        Args:
+            ontology (dict): A dictionary representing the ontology with space types and their definitions.
+        """
+        from hierarchical.ontologies.space import OmniclassSpaceOntology
+
+        labeled_spaces = []
+        for space in self.spaces.values():
+            try:
+                # Apply the Omniclass Space Ontology to each space
+                ontology = OmniclassSpaceOntology()
+                space, ontology_attrs = ontology.apply_ontology(space)
+
+                # update the space in the building graph with ontology attributes
+                self.building_graph.update_node(
+                    space.id,
+                    'Space',
+                    attributes=ontology_attrs
+                )
                 
+                labeled_spaces.append(space)
+            except Exception as e:
+                print(f"Error applying ontology to space '{space.name}': {e}")
+        self.spaces = {space.id: space for space in labeled_spaces}
+
     def show_boundaries(self):
         """
         Display boundaries using Plotly for better 3D interaction.
@@ -2483,7 +2862,7 @@ class Model:
 
         fig.show()
 
-    def show_spaces_graph(self):
+    def show_spaces_graph(self, by=None):
         """
         Display the space adjacency graph in 3D using Plotly.
         Positions are inferred from space geometry centroid or node attributes.
@@ -2607,16 +2986,71 @@ class Model:
         """Convenience method to show all items flattened to elements."""
         return self.show(flatten_to_elements=True, **kwargs)
 
-    def show_spaces(self):
+    def show_spaces(self, by=None):
         """
         Display the inferred spaces in the model using Plotly.
         Each space is represented as a 3D mesh with its boundaries.
+        Colors spaces based on the value stored in space.attributes[by] if provided.
         """
         import plotly.graph_objects as go
+        import plotly.express as px
+        import numpy as np
 
         fig = go.Figure()
 
-        for space in self.spaces.values():
+        if not self.spaces:
+            print("No spaces to display.")
+            return
+
+        # Collect color values if 'by' parameter is provided
+        color_values = []
+        space_list = list(self.spaces.values())
+        
+        if by:
+            for space in space_list:
+                if hasattr(space, 'attributes') and isinstance(space.attributes, dict):
+                    color_value = space.attributes.get(by, None)
+                    color_values.append(color_value)
+                else:
+                    color_values.append(None)
+        
+        # Determine coloring strategy
+        use_coloring = by and any(cv is not None for cv in color_values)
+        color_map = {}
+        colorscale = None
+        
+        if use_coloring:
+            # Filter out None values for analysis
+            valid_values = [cv for cv in color_values if cv is not None]
+            
+            if not valid_values:
+                use_coloring = False
+            else:
+                # Check if values are numeric
+                try:
+                    numeric_values = [float(v) for v in valid_values]
+                    is_numeric = True
+                    
+                    # Normalize values for colorscale (0-1 range)
+                    min_val, max_val = min(numeric_values), max(numeric_values)
+                    if max_val > min_val:
+                        colorscale = px.colors.sequential.Viridis
+                    else:
+                        is_numeric = False
+                except (ValueError, TypeError):
+                    is_numeric = False
+                
+                if not is_numeric:
+                    # Categorical coloring
+                    unique_values = list(set(valid_values))
+                    colors_palette = px.colors.qualitative.Set1
+                    if len(unique_values) > len(colors_palette):
+                        colors_palette = px.colors.qualitative.Light24
+                    
+                    for i, val in enumerate(unique_values):
+                        color_map[val] = colors_palette[i % len(colors_palette)]
+
+        for i, space in enumerate(space_list):
             # Extract geometry data
             vertices = space.geometry.get_vertices()
             faces = space.geometry.get_faces()
@@ -2625,21 +3059,47 @@ class Model:
                 continue
 
             x, y, z = zip(*vertices)
-            i, j, k = zip(*faces)
+            i_faces, j_faces, k_faces = zip(*faces)
+
+            # Determine color for this space
+            space_color = 'lightblue'  # Default color
+            
+            if use_coloring and i < len(color_values) and color_values[i] is not None:
+                if by in ['numeric'] or (colorscale and isinstance(color_values[i], (int, float))):
+                    # Numeric coloring - convert to colorscale index
+                    try:
+                        normalized_val = (float(color_values[i]) - min_val) / (max_val - min_val) if max_val > min_val else 0.5
+                        color_idx = int(normalized_val * (len(colorscale) - 1))
+                        space_color = colorscale[color_idx]
+                    except:
+                        space_color = 'lightblue'
+                else:
+                    # Categorical coloring
+                    space_color = color_map.get(color_values[i], 'lightblue')
+
+            # Create name with attribute value if coloring
+            space_name = f"Space: {space.id}"
+            if use_coloring and i < len(color_values) and color_values[i] is not None:
+                space_name += f" ({by}: {color_values[i]})"
 
             # Create mesh3d trace for the space
             fig.add_trace(go.Mesh3d(
                 x=x, y=y, z=z,
-                i=i, j=j, k=k,
-                opacity=0.5,
-                color='lightblue',
-                name=f"Space: {space.id}",
-                hoverinfo='skip',
+                i=i_faces, j=j_faces, k=k_faces,
+                opacity=0.7,
+                color=space_color,
+                name=space_name,
+                hoverinfo='name',
                 showlegend=True
             ))
 
+        # Update layout
+        title = "Inferred Spaces"
+        if use_coloring:
+            title += f" - Colored by {by}"
+        
         fig.update_layout(
-            title="Inferred Spaces",
+            title=title,
             scene=dict(
                 xaxis_title='X',
                 yaxis_title='Y',
@@ -2648,6 +3108,26 @@ class Model:
             ),
             showlegend=True
         )
+
+        # Add colorbar for numeric values
+        if use_coloring and colorscale and 'min_val' in locals() and 'max_val' in locals():
+            # Create a dummy scatter trace for the colorbar
+            fig.add_trace(go.Scatter3d(
+                x=[None], y=[None], z=[None],
+                mode='markers',
+                marker=dict(
+                    size=0.1,
+                    color=[min_val, max_val],
+                    colorscale='Viridis',
+                    showscale=True,
+                    colorbar=dict(
+                        title=by,
+                        x=1.02
+                    )
+                ),
+                showlegend=False,
+                hoverinfo='skip'
+            ))
 
         fig.show()
 
@@ -2854,6 +3334,11 @@ class Model:
         min_x, min_y, min_z = np.min(all_vertices, axis=0)
         max_x, max_y, max_z = np.max(all_vertices, axis=0)
         return (min_x, min_y, min_z, max_x, max_y, max_z)
+    
+    def get_openai_client(self):
+        from openai import OpenAI
+        client = OpenAI(api_key=OPEN_AI_API_KEY)
+        return client
 
     def ask(self, question: str, **kwargs) -> str:
         """
@@ -2872,9 +3357,8 @@ class Model:
         Returns:
             str: The answer generated from the graph query result.
         """
-        from openai import OpenAI
-
-        client = OpenAI(api_key=OPEN_AI_API_KEY)
+        
+        client = self.get_openai_client()
 
         # Step 1: Get schema context
         node_types = self.building_graph.get_node_types_to_string()
