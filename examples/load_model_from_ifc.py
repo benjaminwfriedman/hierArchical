@@ -1,6 +1,6 @@
 from hierarchical.abstractions import Model
 
-model = Model.from_ifc(ifc_file="/Users/benjaminfriedman/repos/hierArchical/sample_house.ifc")
+model = Model.from_ifc(ifc_file="/Users/benjaminfriedman/repos/hierArchical/AC20-Institute-Var-2.ifc")
 
 # Example usage
 # view the spaces + objects
