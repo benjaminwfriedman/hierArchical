@@ -864,6 +864,13 @@ class Model:
             hierarchical_spaces = []
             settings = ifcopenshell.geom.settings()
             settings.set(settings.USE_WORLD_COORDS, True)
+
+            # deduplicate ifc_objs based on ifc_obj.GlobalId
+
+            seen_global_ids = set()
+            objects = [ifc_obj for ifc_obj in objects 
+                        if ifc_obj.GlobalId not in seen_global_ids 
+                        and not seen_global_ids.add(ifc_obj.GlobalId)]
             
             for ifc_obj in objects:
                 try:
@@ -997,7 +1004,8 @@ class Model:
 
     def heal_boundaries(self, tolerance=15.0, version='occ'):
         """Heal boundaries with comprehensive shape fixing and gap filling"""
-        if version == 'ooc':
+        if version == 'occ':
+            import tempfile
             from OCC.Core.BRepBuilderAPI import (BRepBuilderAPI_Sewing, BRepBuilderAPI_MakePolygon, 
                                                 BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeShell)
             from OCC.Core.gp import gp_Pnt, gp_Pln, gp_Dir, gp_Vec
@@ -1011,98 +1019,767 @@ class Model:
             from OCC.Core.GeomAPI import GeomAPI_ProjectPointOnSurf
             from OCC.Core.BRepClass3d import BRepClass3d_SolidClassifier
             from OCC.Core import TopoDS
+            from OCC.Core.BRepOffset import BRepOffset_Analyse
+            from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_MakeOffsetShape
+            from OCC.Core.BOPAlgo import BOPAlgo_MakerVolume
+            from OCC.Core.GeomAbs import GeomAbs_Intersection
+            from OCC.Core.BRepOffset import BRepOffset_Skin
+            from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_MakeOffset
+            from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+            from OCC.Core.BRepTools import breptools_OuterWire
+            from OCC.Core.TopExp import TopExp_Explorer
+            from OCC.Core.TopAbs import TopAbs_WIRE
+            from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Splitter
+            from OCC.Core.BRep import BRep_Builder
+            from OCC.Core.TopoDS import TopoDS_Compound
+            from OCC.Core.TopExp import TopExp_Explorer
+            from OCC.Core.TopAbs import TopAbs_FACE
+            from OCC.Core.TopTools import TopTools_ListOfShape
+            from OCC.Core.BRep import BRep_Tool
+            from OCC.Core.GeomLib import GeomLib_IsPlanarSurface
+            from OCC.Core.gp import gp_Pln, gp_Vec, gp_Pnt
+            from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Fuse
+            from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+            from OCC.Core.TopTools import TopTools_ListOfShape
+            from OCC.Core.TopExp import TopExp_Explorer
+            from OCC.Core.TopAbs import TopAbs_FACE
+            from OCC.Core.BRepTools import breptools
+            from OCC.Core.TopExp import TopExp_Explorer
+            from OCC.Core.TopAbs import TopAbs_SOLID
 
+            # TNaming imports
+            from OCC.Core.TNaming import TNaming_Builder, TNaming_NamedShape
+            from OCC.Core.TDF import TDF_Data, TDF_Label, TDF_ChildIterator
+            from OCC.Core.TDataStd import TDataStd_Name, TDataStd_Integer
+            from OCC.Core.TCollection import TCollection_ExtendedString
+
+            from topologicpy.Topology import Topology
+            import math
 
             from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Sewing
+            from hierarchical.utils import plot_opencascade_shapes
+            from OCC.Core.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+            from OCC.Core.BOPAlgo import BOPAlgo_RemoveFeatures
+            from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Common
+            from OCC.Core.BRepGProp import brepgprop
+
+            from topologicpy.CellComplex import CellComplex
+            from topologicpy.Shell import Shell
+            from topologicpy.Face import Face
+
+            from hierarchical.utils import transfer_topologic_dict
+            
+
+          # Initialize TNaming document for tracking
+            doc = TDF_Data()
+            main_label = doc.Root()
+
+            # Create labels for different stages
+            initial_faces_label = main_label.NewChild()
+            offset_faces_label = main_label.NewChild()
+            merged_faces_label = main_label.NewChild()
+            volume_faces_label = main_label.NewChild()
+
+            # Simplified helper functions that don't use TDataStd at all
+            def set_label_name(label, name_string):
+                """Helper function - just returns the name string, no TDataStd calls"""
+                return name_string
+
+            def set_label_integer(label, int_value):
+                """Helper function - just returns the integer, no TDataStd calls"""
+                return int_value
+
+            # Create a label tracking dictionary using label IDs as keys
+            label_metadata = {}
+            label_metadata[id(initial_faces_label)] = {"name": "InitialFaces", "stage": "initial", "label": initial_faces_label}
+            label_metadata[id(offset_faces_label)] = {"name": "OffsetFaces", "stage": "offset", "label": offset_faces_label}
+            label_metadata[id(merged_faces_label)] = {"name": "MergedFaces", "stage": "merged", "label": merged_faces_label}
+            label_metadata[id(volume_faces_label)] = {"name": "VolumeFaces", "stage": "volume", "label": volume_faces_label}
+
+            # Tracking dictionaries
+            face_genealogy = {}  # Maps face_id -> [boundary_id, stage, operations]
+            boundary_to_faces = {}  # Maps boundary_id -> list of final face_ids
+
+            def register_face(face, boundary_id, stage, parent_label, operation="created", parent_face_id=None):
+                """Register a face in the TNaming system with genealogy tracking"""
+                face_label = parent_label.NewChild()
+                builder = TNaming_Builder(face_label)
+                builder.Generated(face)
+                
+                # Create unique face ID
+                face_id = id(face)
+                
+                # Set name with boundary and stage info - no TDataStd calls
+                name = f"Boundary_{boundary_id}_{stage}_{face_id}"
+                name_attr = set_label_name(face_label, name)  # Just returns the string
+                
+                # Store boundary ID - no TDataStd calls
+                int_attr = set_label_integer(face_label, boundary_id)  # Just returns the int
+                
+                # Track genealogy in Python dictionaries
+                if face_id not in face_genealogy:
+                    face_genealogy[face_id] = {
+                        'boundary_id': boundary_id,
+                        'stage': stage,
+                        'operations': [],
+                        'label': face_label,
+                        'label_id': id(face_label),
+                        'name': name,
+                        'name_attr': name_attr,
+                        'int_attr': int_attr,
+                        'face_object': face
+                    }
+                
+                face_genealogy[face_id]['operations'].append({
+                    'operation': operation,
+                    'parent_face_id': parent_face_id,
+                    'stage': stage
+                })
+                
+                return face_id, face_label
+
+
+            def track_face_transformation(original_face_id, new_face, new_stage, parent_label, operation="transformed"):
+                """Track when a face is transformed into a new face"""
+                if original_face_id in face_genealogy:
+                    boundary_id = face_genealogy[original_face_id]['boundary_id']
+                    new_face_id, new_label = register_face(
+                        new_face, boundary_id, new_stage, parent_label, operation, original_face_id
+                    )
+                    return new_face_id
+                return None
+
+            def find_faces_by_boundary(boundary_id, stage=None):
+                """Find all faces belonging to a specific boundary at a given stage"""
+                matching_faces = []
+                for face_id, info in face_genealogy.items():
+                    if info['boundary_id'] == boundary_id:
+                        if stage is None or info['stage'] == stage:
+                            matching_faces.append((face_id, info))
+                return matching_faces
+
+            def get_final_faces_for_boundary(boundary_id):
+                """Get the final faces that originated from a specific boundary"""
+                # Find the latest stage for this boundary
+                boundary_faces = find_faces_by_boundary(boundary_id)
+                if not boundary_faces:
+                    return []
+                
+                # Group by stage and get the latest
+                stages = {}
+                for face_id, info in boundary_faces:
+                    stage = info['stage']
+                    if stage not in stages:
+                        stages[stage] = []
+                    stages[stage].append((face_id, info))
+                
+                # Return faces from the latest stage
+                latest_stage = max(stages.keys()) if stages else None
+                return stages.get(latest_stage, [])
+
+
+            def get_plane_normal_and_point(face):
+                """Extract plane normal and point from a face"""
+                try:
+                    surface = BRep_Tool.Surface(face)
+                    
+                    # Check if it's planar
+                    if GeomLib_IsPlanarSurface(surface):
+                        # Get plane parameters
+                        plane = surface.GetObject().Plane()
+                        normal = plane.Axis().Direction()
+                        point = plane.Location()
+                        
+                        return (normal.X(), normal.Y(), normal.Z()), (point.X(), point.Y(), point.Z())
+                except:
+                    pass
+                return None, None
+
+            def are_coplanar(face1, face2, tolerance=1e-6):
+                """Check if two faces are coplanar within tolerance"""
+                normal1, point1 = get_plane_normal_and_point(face1)
+                normal2, point2 = get_plane_normal_and_point(face2)
+                
+                if normal1 is None or normal2 is None:
+                    return False
+                
+                # Check if normals are parallel (or anti-parallel)
+                dot_product = abs(normal1[0]*normal2[0] + normal1[1]*normal2[1] + normal1[2]*normal2[2])
+                if abs(dot_product - 1.0) > tolerance:
+                    return False
+                
+                # Check if points lie on the same plane
+                # Vector from point1 to point2
+                vec_12 = (point2[0]-point1[0], point2[1]-point1[1], point2[2]-point1[2])
+                
+                # Dot product with normal should be ~0 if points are coplanar
+                distance = abs(vec_12[0]*normal1[0] + vec_12[1]*normal1[1] + vec_12[2]*normal1[2])
+                
+                return distance < tolerance
+
+            def group_coplanar_faces(offset_faces, tolerance=1e-6):
+                """Group faces that are coplanar"""
+                valid_faces = [f for f in offset_faces if f is not None]
+                groups = []
+                used = set()
+                
+                for i, face1 in enumerate(valid_faces):
+                    if i in used:
+                        continue
+                        
+                    # Start new group with this face
+                    group = [face1]
+                    used.add(i)
+                    
+                    # Find all other faces coplanar with this one
+                    for j, face2 in enumerate(valid_faces):
+                        if j in used or j <= i:
+                            continue
+                            
+                        if are_coplanar(face1, face2, tolerance):
+                            group.append(face2)
+                            used.add(j)
+                    
+                    groups.append(group)
+                
+                print(f"Grouped {len(valid_faces)} faces into {len(groups)} coplanar groups")
+                return groups
+
+            def merge_coplanar_group(face_group):
+                """Merge a group of coplanar faces using boolean union"""
+                if len(face_group) == 1:
+                    return face_group[0]
+                
+                result = face_group[0]
+                
+                for face in face_group[1:]:
+                    try:
+                        # Use Fuse to union the faces
+                        fuse_op = BRepAlgoAPI_Fuse(result, face)
+                        fuse_op.Build()
+                        
+                        if fuse_op.IsDone():
+                            result = fuse_op.Shape()
+                        else:
+                            print("Warning: Face merge failed, keeping separate")
+                            # If merge fails, we'll just keep them separate
+                    except Exception as e:
+                        print(f"Warning: Exception during face merge: {e}")
+                
+                return result
+
+            def preprocess_coplanar_faces(face_id_pairs, tolerance=0.1):
+                """
+                Merge coplanar faces before splitting to reduce artifacts
+                """
+                # Group coplanar faces
+                coplanar_groups = group_coplanar_faces(face_id_pairs, tolerance)
+                
+                # Merge each group and track genealogy
+                merged_faces_with_ids = []
+                for group in coplanar_groups:
+                    if len(group) == 1:
+                        # Single face, no merge needed
+                        face, face_id = group[0]
+                        merged_faces_with_ids.append((face, face_id))
+                    else:
+                        # Merge group - this returns a tuple (merged_face, source_ids)
+                        merged_result = merge_coplanar_group(group)
+                        merged_face, source_ids = merged_result  # Unpack the tuple properly
+                        
+                        # Extract faces from the merged result (could be compound)
+                        if merged_face:
+                            explorer = TopExp_Explorer(merged_face, TopAbs_FACE)  # Now merged_face is just the shape
+                            while explorer.More():
+                                current_face = explorer.Current()
+                                # Register this as a merged face from multiple sources
+                                boundary_id = face_genealogy[source_ids[0]]['boundary_id']  # Use first source's boundary
+                                merged_face_id = register_face(
+                                    current_face, boundary_id, "merged", merged_faces_label, 
+                                    operation=f"merged_from_{len(source_ids)}_faces"
+                                )[0]
+                                
+                                # Record the merge operation genealogy
+                                face_genealogy[merged_face_id]['operations'].append({
+                                    'operation': 'merged_from',
+                                    'source_face_ids': source_ids,
+                                    'stage': 'merged'
+                                })
+                                
+                                merged_faces_with_ids.append((current_face, merged_face_id))
+                                explorer.Next()
+                
+                print(f"Merged down to {len(merged_faces_with_ids)} faces")
+                return merged_faces_with_ids
+
+            def offset_opencascade_face(face, offset):
+                # Extract the outer wire of the face
+                outer_wire = breptools_OuterWire(face)
+
+                # Create 2D offset with sharp join type in constructor
+                offset_maker = BRepOffsetAPI_MakeOffset(outer_wire, GeomAbs_Intersection)
+
+                # No need for AddWire since we passed the wire in constructor
+                offset_maker.Perform(offset)
+
+                if offset_maker.IsDone():
+                    offset_wire = offset_maker.Shape()
+                    
+                    # Convert wire back to face
+                    face_maker = BRepBuilderAPI_MakeFace(offset_wire)
+                    if face_maker.IsDone():
+                        offset_face = face_maker.Face()
+                        return offset_face
+                    
+            def split_faces_by_faces(offset_faces, tolerance=0.01):
+                """
+                Use BRepAlgoAPI_Splitter to split all offset faces by each other
+                This creates a cell complex by finding all intersections
+                """
+                
+                # Create a compound of all offset faces using BRep_Builder
+                builder = BRep_Builder()
+                compound = TopoDS_Compound()
+                builder.MakeCompound(compound)
+                
+                # Add all offset faces to the compound
+                for face in offset_faces:
+                    if face is not None:  # Skip any None faces from failed offsets
+                        builder.Add(compound, face)
+                
+                # Create the splitter
+                splitter = BRepAlgoAPI_Splitter()
+                
+                # Set tolerance
+                splitter.SetFuzzyValue(tolerance)
+
+                # Create TopTools_ListOfShape for arguments and tools
+                arguments_list = TopTools_ListOfShape()
+                tools_list = TopTools_ListOfShape()
+                
+                # Add each face individually as both argument and tool
+                for face in offset_faces:
+                    if face is not None:
+                        arguments_list.Append(face)
+                        tools_list.Append(face)
+            
+                # Set arguments and tools
+                splitter.SetArguments(arguments_list)
+                splitter.SetTools(tools_list)
+                
+                # Perform the splitting operation
+                splitter.Build()
+                
+                # Add the compound as both arguments and tools
+                # Arguments = shapes to be split
+                # Tools = shapes to split by
+                
+                
+                if splitter.IsDone():
+                    result_shape = splitter.Shape()
+                    
+                    # Extract all resulting faces
+                    split_faces = []
+                    explorer = TopExp_Explorer(result_shape, TopAbs_FACE)
+                    
+                    while explorer.More():
+                        split_face = explorer.Current()
+                        split_faces.append(split_face)
+                        explorer.Next()
+                    
+                    print(f"Splitter created {len(split_faces)} faces from {len(offset_faces)} input faces")
+                    return split_faces
+                else:
+                    print("Splitter operation failed")
+                    return None
 
             
+            
+            # MAIN PROCESS STARTS HERE
             all_boundaries = list(self.boundaries.values())
             
-            # Step 1: Create initial faces with better polygon construction
-            initial_faces = []
-            for boundary in all_boundaries:
+            # Step 1: Create initial faces with TNaming registration
+            initial_faces_with_ids = []
+            initial_topologic_faces_with_ids = []
+            for i, boundary in enumerate(all_boundaries):
                 face = self._create_robust_face(boundary, tolerance)
                 if face:
-                    initial_faces.append(face)
+                    # Register in TNaming system
+                    face_id, face_label = register_face(face, boundary.id, "initial", initial_faces_label)
+                    initial_faces_with_ids.append((face, face_id))
 
-            print(f"Created {len(initial_faces)} initial faces")
-
-
-            shape_groups = self.find_enclosed_shape_groups(initial_faces)
-
-            shape_groups.sort(key=lambda x: x['face_count'], reverse=True)
-
-            filtered_shape_groups = []
-            for current_group in shape_groups:
-                current_faces = set(current_group['face_indices'])
-                is_subset = False
+                topology = boundary.topologic
                 
-                # Check if current group is subset of any already selected group
-                for selected_group in filtered_shape_groups:
-                    selected_faces = set(selected_group['face_indices'])
-                    if current_faces.issubset(selected_faces):
-                        is_subset = True
-                        break
+                # remove any co-linear edges
+                topology = Shell.RemoveCollinearEdges(topology)
+               
+                topologic_face = Face.ByShell(topology)
+
+                # transfer dict
+                topologic_face = transfer_topologic_dict(topology, topologic_face)
+
+                dict = Topology.Dictionary(topologic_face)
+
+                dict = Dictionary.SetValueAtKey(dict, "boundary_id", boundary.id)
+
+                topologic_face = Topology.SetDictionary(topologic_face, dict)
+
+                initial_topologic_faces_with_ids.append(topologic_face)
+
+
+            print(f"Created {len(initial_faces_with_ids)} initial faces")
+
+            # Step 2: Create offset faces with tracking
+            offset_faces_with_ids = []
+            for face, face_id in initial_faces_with_ids:
+                offset_face = offset_opencascade_face(face, 0.2)
+                if offset_face:
+                    # Track transformation
+                    new_face_id = track_face_transformation(
+                        face_id, offset_face, "offset", offset_faces_label, "offset_operation"
+                    )
+                    offset_faces_with_ids.append((offset_face, new_face_id))
+
+            # Step 3: Merge coplanar faces with tracking
+            merged_faces_with_ids = preprocess_coplanar_faces(offset_faces_with_ids)
+
+            # Step 4: Create volumes
+            volume_maker = BOPAlgo_MakerVolume()
+
+            # Add faces to volume maker
+            faces_only = [face for face, face_id in merged_faces_with_ids]
+            for face in faces_only:
+                volume_maker.AddArgument(face)
+
+            # Set AvoidInternalShapes to true
+            volume_maker.SetAvoidInternalShapes(True)
+            volume_maker.SetIntersect(True)
+            volume_maker.SetFuzzyValue(0.01)
+            # Perform the volume creation
+            volume_maker.Perform()
+
+            # Check if operation was successful
+            if volume_maker.HasErrors():
+                print("Error creating volumes:")
+                print(volume_maker.GetReport())
+            else:
+                # Get the resulting shape(s)
+                result = volume_maker.Shape()
                 
-                # Only add if it's not a subset
-                if not is_subset:
-                    filtered_shape_groups.append(current_group)
-
-            face_group_indices = [group['face_indices'] for group in filtered_shape_groups]
-
-            healed_face_groups = []
-            # face_mapping = {i: [] for i in range(len(initial_faces))}
-            face_mapping = {i: [] for i in range(len(initial_faces))}
-
-            for group_idx, face_indices in enumerate(face_group_indices):
-                face_indices = face_group_indices[group_idx]
-                face_group = [initial_faces[i] for i in face_indices]
-
-                # Create and configure the sewing tool
-                sewer = BRepBuilderAPI_Sewing(0.1)
-                sewer.SetNonManifoldMode(True)
-                for face in face_group:
-                    sewer.Add(face)
-                sewer.Perform()
-                sewn_shape = sewer.SewedShape()
-
+                # Extract volumes and their faces with tracking
+                explorer = TopExp_Explorer(result, TopAbs_SOLID)
+                volumes = []
+                final_face_tracking = []
+                all_found_faces = []
+                boundary_to_healed_faces = {}
                 healed_faces = []
-                face_explorer = TopExp_Explorer(sewn_shape, TopAbs_FACE)
+                while explorer.More():
+                    solid = explorer.Current()
 
-                while face_explorer.More():
-                    face = TopoDS.topods.Face(face_explorer.Current())
-                    healed_faces.append(face)
-                    face_explorer.Next()
+                    # unifier = ShapeUpgrade_UnifySameDomain(solid, True, True, True)
+                    # unifier.SetLinearTolerance(0.1)  # Adjust based on your model scale
+                    # unifier.SetAngularTolerance(0.1)
+                    # unifier.Build()
+                    # unified_solid = unifier.Shape()
 
-                healed_face_groups.append(healed_faces)
+                    # healer = ShapeFix_Shape()
+                    # healer.Init(unified_solid)
+                    # healer.Perform()
+                    # healed_solid = healer.Shape()
 
-                # map original face indices to healed faces
-                for i in range(len(healed_faces)):
-                    original_idx = face_indices[i]
-                    face_mapping[original_idx].append(healed_faces[i])
-            
-            # if there are two versions of the same face, we need to merge them
-            all_healed_faces = []
-            for original_idx, healed_faces in face_mapping.items():
-                if len(healed_faces) == 1:
-                    all_healed_faces.append(healed_faces[0])
-                elif len(healed_faces) > 1:
-                    # Merge faces with a sewing operation
-                    sewer = BRepBuilderAPI_Sewing(0.1)
-                    for face in healed_faces:
-                        sewer.Add(face)
-                    sewer.Perform()
-                    merged_shape = sewer.SewedShape()
+                    volumes.append(solid)
                     
-                    # Extract the merged face
-                    face_explorer = TopExp_Explorer(merged_shape, TopAbs_FACE)
-                    if face_explorer.More():
-                        all_healed_faces.append(TopoDS.topods.Face(face_explorer.Current()))
+                    # Simplified but more robust approach
+                    face_explorer = TopExp_Explorer(solid, TopAbs_FACE)
+                    volume_faces = []
+
+                    # while face_explorer.More():
+                    #     face = face_explorer.Current()
+                    #     healed_faces.append(face)
+                    #     volume_faces.append(face)
+                    #     all_found_faces.append(face)
+                    #     # Find the most likely source face by geometric properties
+                    #     best_match_boundary_id = None
+                    #     best_match_face_id = None
+                        
+                    #     # Get geometric properties of the current face
+                    #     from OCC.Core.GProp import GProp_GProps
+                    #     from OCC.Core.BRepGProp import brepgprop_SurfaceProperties
+                        
+                    #     current_props = GProp_GProps()
+                    #     brepgprop_SurfaceProperties(face, current_props)
+                    #     current_center = current_props.CentreOfMass()
+                    #     current_area = current_props.Mass()
+                        
+                    #     min_distance = float('inf')
+
+                    #     def get_vert_dist_between_faces(face, initial_face):
+                    #         # Calculate distance between centers
+                                
+                    #         vertices1, vertices2 = [], []
+
+                    #         # Get vertices from face1
+                    #         v_exp1 = TopExp_Explorer(face, TopAbs_VERTEX)
+                    #         while v_exp1.More():
+                    #             pt = BRep_Tool.Pnt(v_exp1.Current())
+                    #             vertices1.append((pt.X(), pt.Y(), pt.Z()))
+                    #             v_exp1.Next()
+                            
+                    #         # Get vertices from face2  
+                    #         v_exp2 = TopExp_Explorer(initial_face, TopAbs_VERTEX)
+                    #         while v_exp2.More():
+                    #             pt = BRep_Tool.Pnt(v_exp2.Current())
+                    #             vertices2.append((pt.X(), pt.Y(), pt.Z()))
+                    #             v_exp2.Next()
+                            
+                    #         if not vertices1 or not vertices2:
+                    #             return float('inf')
+                            
+                    #         # Calculate average minimum distance
+                    #         total_dist = 0.0
+                    #         for v1 in vertices1:
+                    #             min_dist = min(((v1[0]-v2[0])**2 + (v1[1]-v2[1])**2 + (v1[2]-v2[2])**2)**0.5 
+                    #                         for v2 in vertices2)
+                    #             total_dist += min_dist
+
+                    #         avg_dist = total_dist / len(vertices1)
+                    #         return avg_dist
+
+
+                    #     initial_face_distances = []
+                    #     for initial_face, initial_face_id in initial_faces_with_ids:
+                    #         # initial_props = GProp_GProps()
+                    #         # brepgprop_SurfaceProperties(initial_face, initial_props)
+                    #         # initial_center = initial_props.CentreOfMass()
+                    #         # distance = current_center.Distance(initial_center)  # Fixed: use initial_center
+
+                    #         distance = get_vert_dist_between_faces(face, initial_face)
+                    #         co_planer = are_coplanar(face, initial_face)
+                    #         if co_planer:
+                    #             co_planer_penalty = 1
+                            
+                    #         else:
+                    #             co_planer_penalty = 100
+
+                    #         distance = distance * co_planer_penalty
+
+                    #         initial_face_distances.append({
+                    #             "id": initial_face_id,
+                    #             "face": initial_face,
+                    #             "distance": distance
+                    #         })
+
+                    #     # Sort by distance (closest first)
+                    #     initial_face_distances.sort(key=lambda x: x['distance'])
+                                                    
+
+
+                        
+                    #     # Compare with all merged faces to find the closest match
+                    #     for face_item in initial_face_distances[:10]:
+                    #         try:
+                    #             initial_face_id = face_item['id']
+                    #             initial_face = face_item['face']
+
+                    #             initial_props = GProp_GProps()
+                    #             brepgprop_SurfaceProperties(initial_face, initial_props)
+                    #             merged_center = initial_props.CentreOfMass()
+                    #             merged_area = initial_props.Mass()
+
+                    #             # intersection_op = BRepAlgoAPI_Common(face, initial_face)
+                    #             # intersection_op.SetFuzzyValue(0.01)
+                    #             # intersection_op.Build()
+
+                    #             # if not intersection_op.IsDone():
+                    #             #     return 0.0
+        
+                    #             # intersection_shape = intersection_op.Shape()
+                                
+                    #             # # Calculate area of intersection
+                    #             # intersection_area = 0.0
+                    #             # face_explorer = TopExp_Explorer(intersection_shape, TopAbs_FACE)
+                                
+                    #             # while face_explorer.More():
+                    #             #     intersect_face = TopoDS.Face(face_explorer.Current())
+                    #             #     face_props = GProp_GProps()
+                    #             #     brepgprop.SurfaceProperties(intersect_face, face_props)
+                    #             #     intersection_area += face_props.Mass()
+                    #             #     face_explorer.Next()
+                                
+                                
+                    #             area_ratio = abs(current_area - merged_area) / max(current_area, merged_area, 1e-10)
+                    #             avg_dist = get_vert_dist_between_faces(face, initial_face)
+                    #             co_planer = are_coplanar(face, initial_face)
+                    #             if co_planer:
+                    #                 co_planer_penalty = -1
+                    #             else:
+                    #                 co_planer_penalty = 1
+                    #             # Combined metric: distance + area difference
+                    #             # combined_metric = avg_dist + area_ratio * 100  # Weight area difference
+
+                    #             combined_metric = avg_dist + co_planer_penalty * 10_000
+                                
+                    #             # combined_metric = avg_dist
+                                
+                    #             if combined_metric < min_distance:
+                    #                 min_distance = combined_metric
+                    #                 best_match_boundary_id = face_genealogy[initial_face_id]['boundary_id']
+                    #                 best_match_face_id = initial_face_id
+                    #                 best_match_face = initial_face
+                                    
+                    #         except:
+                    #             continue
+                        
+                    #     # Fallback to first available if no good match found
+                    #     if best_match_boundary_id is None and merged_faces_with_ids:
+                    #         best_match_boundary_id = face_genealogy[merged_faces_with_ids[0][1]]['boundary_id']
+                    #         best_match_face_id = merged_faces_with_ids[0][1]
+                        
+                    #     # Register the final face
+                    #     if best_match_boundary_id is not None:
+                    #         final_face_id = register_face(
+                    #             face, best_match_boundary_id, "final_volume", volume_faces_label, 
+                    #             operation="volume_boundary", parent_face_id=best_match_face_id
+                    #         )[0]
+                            
+                    #         volume_faces.append((face, final_face_id))
+                    #         final_face_tracking.append((face, final_face_id))
+
+                    #         try:
+                    #             boundary_to_healed_faces[best_match_boundary_id]
+                    #             pass
+                    #         except Exception as e:
+                    #             boundary_to_healed_faces[best_match_boundary_id] = []
+
+                            
+                    #         boundary_to_healed_faces[best_match_boundary_id].append(face)
+
+                        
+                    #     face_explorer.Next()
+                    
+                    # print(f"Volume has {len(volume_faces)} faces")
+                    explorer.Next()
+            # TODO Apply Healed Face Information back to original Boundaries
+
+            # Create a CC out of the faces
+
+            geom_object = Geometry()
+            volumes_topologic_cells = [geom_object._opencascade_to_topologic(v) for v in volumes]
+
+            cc = CellComplex.ByCells(volumes_topologic_cells)
+            healed_faces_from_cc = Topology.Faces(cc)
+
+            offset_faces_from_cc = []
+            for f in healed_faces_from_cc:
+                try:
+                    simplified_face = Face.Simplify(f)
+                    offset_face = Face.ByOffset(simplified_face, offset=-0.1, numWorkers=1)
+                    offset_faces_from_cc.append(offset_face)
+
+                except TypeError as e:
+                    pass
+
+
+        
+            # healed_faces_with_ids = Topology.Inherit(healed_faces_from_cc, initial_topologic_faces_with_ids, exclusive=False, tolerance=0.1)
+            all_healed_boundaries_dict = {}
+            all_healed_boundaries = []
+            for h_f in healed_faces_from_cc:
+                h_f_geom = Geometry.from_topology(h_f)
+                
+                vertex_distances = []
+                for i_f in initial_topologic_faces_with_ids:
+                    i_f_dict = Topology.Dictionary(i_f)
+                    i_f_dict = Dictionary.PythonDictionary(i_f_dict)
+                    initial_boundary_id = i_f_dict['boundary_id']
+
+                    distance = h_f_geom.average_vertex_distance(Geometry.from_topology(i_f)) ** 1.5
+                    
+                    if distance == 3.228202347412661:
+                        print('hi')
+                    
+                    co_planer = h_f_geom.is_coplanar(Geometry.from_topology(i_f))
+
+                    if co_planer:
+                        co_planer_penalty = 1
+                    else:
+                        co_planer_penalty = 1_000
+
+                    cost = distance * co_planer_penalty
+                    vertex_distances.append(
+                        {'distance': cost,
+                         'distance_score': distance,
+                         'co_planer_penalty': co_planer_penalty,
+                         'face': i_f,
+                         'boundary_id': initial_boundary_id}
+                    )
+
+                # Sort by distance (closest first)
+                vertex_distances.sort(key=lambda x: x['distance'])
+                                                    
+                selected_face = vertex_distances[0]
+
+
+                        
+                original_boundary = self.boundaries[selected_face['boundary_id']]
+
+                geom = Geometry.from_topology(selected_face['face'])
+
+                new_boundary = Boundary(
+                    name=original_boundary.name,
+                    type=boundary.type,
+                    is_access_boundary=boundary.is_access_boundary,
+                    is_visual_boundary=boundary.is_visual_boundary,
+                    base_item=boundary.base_item,
+                    geometry=h_f_geom
+                )
+                
+                all_healed_boundaries.append(new_boundary)
+                all_healed_boundaries_dict[new_boundary.id] = new_boundary
+
+
+            return all_healed_boundaries_dict, all_healed_boundaries
+
+            # for original_id, healed_faces in boundary_to_healed_faces.items():
+                # f len(healed_faces) == 1:
+                #     all_healed_faces.append(healed_faces[0])
+                # elif len(healed_faces) > 1:
+                #     # Merge faces with a sewing operation
+                #     sewer = BRepBuilderAPI_Sewing(0.1)
+                #     for face in healed_faces:
+                #         sewer.Add(face)
+                #     sewer.Perform()
+                #     merged_shape = sewer.SewedShape()
+                #     i
+                #     # Extract the merged face
+                #     face_explorer = TopExp_Explorer(merged_shape, TopAbs_FACE)
+                #     if face_explorer.More():
+                #         all_healed_faces.append(TopoDS.topods.Face(face_explorer.Current()))
 
             # Step 9: Update boundary geometries with improved vertex extraction
-            self._update_boundary_geometries(all_boundaries, all_healed_faces)
+            # self._update_boundary_geometries(all_boundaries, all_healed_faces)
+
+            #     original_boundary = self.boundaries[original_id]
+
+            #     for face in healed_faces:
+
+            #         geom = Geometry.from_occ(face)
+
+            #         new_boundary = Boundary(
+            #             name=original_boundary.name,
+            #             type=boundary.type,
+            #             is_access_boundary=boundary.is_access_boundary,
+            #             is_visual_boundary=boundary.is_visual_boundary,
+            #             base_item=boundary.base_item,
+            #             geometry=geom
+            #         )
+
+            #         all_healed_faces.append(new_boundary)
+
+
+                    
             
-            return all_healed_faces
+            # return all_healed_faces
         if version == 'topologic':
             from hierarchical.utils import topology_to_dict
             from topologicpy.Face import Face
@@ -1113,8 +1790,11 @@ class Model:
             from topologicpy.Topology import Topology
             from topologicpy.Cluster import Cluster
             from topologicpy.CSG import CSG
+            from topologicpy.Shell import Shell
             from hierarchical.utils import transfer_topologic_dict
             from topologicpy.Helper import Helper
+            from topologicpy.Graph import Graph as Topologic_Graph
+
 
             def intersection_edges_from_faces(faces, tol=1e-4, angle_prune_degree=1.0, skip_near_parallel=False, use_bbox_prune=True, merge=False):
                 from itertools import combinations
@@ -1248,15 +1928,50 @@ class Model:
                         print(f"Error computing intersection between faces: {e}")
                         continue
 
-                if not collected_edges:
+                # Now intersect edges to find manifold points
+                collected_intersected_wires = []
+                for ea, eb in combinations(collected_edges, 2):
+                    # intersection
+                    ea_verts = Topology.Vertices(ea)
+                    eb_verts = Topology.Vertices(eb)
+
+                    ea_x1 = Vertex.X(ea_verts[0])
+                    ea_y1 = Vertex.Y(ea_verts[0])
+                    ea_x2 = Vertex.X(ea_verts[1])
+                    ea_y2 = Vertex.Y(ea_verts[1])
+
+                    eb_x1 = Vertex.X(eb_verts[0])
+                    eb_y1 = Vertex.Y(eb_verts[0])
+                    eb_x2 = Vertex.X(eb_verts[1])
+                    eb_y2 = Vertex.Y(eb_verts[1])
+                                    
+                    try:
+                        res = Topology.Intersect(ea, eb, tolerance=tol)
+                        if not res:
+                            continue
+                        if Topology.IsInstance(res, "Edge"): 
+                            # es = Topology.Vertices(res)
+                            pass
+                        elif Topology.IsInstance(res, "Vertex"):
+                            # for each edge create a wire using original end points and the new intersection point
+                            wire_ea = Wire.ByVertices([ea_verts[0], res, ea_verts[1]])
+                            wire_eb = Wire.ByVertices([eb_verts[0], res, eb_verts[1]])
+                            es = [wire_ea, wire_eb]
+                        if es:
+                            collected_intersected_wires.extend(es)
+                    except Exception as e:
+                        print(f"Error computing intersection between faces: {e}")
+                        continue
+
+                if not collected_intersected_wires:
                     return []
                 
                 if not merge:
-                    return collected_edges
+                    return collected_intersected_wires
                 
                 # Merge / Clean
                 try:
-                    merged = Topology.SelfMerge(Cluster.ByTopologies(collected_edges), tolerance=tol)
+                    merged = Topology.SelfMerge(Cluster.ByTopologies(collected_intersected_wires), tolerance=tol)
                     if Topology.IsInstance(merged, "Cluster"):
                         return Topology.Edges(merged) or []
                     if Topology.IsInstance(merged, "Edge"):
@@ -1266,7 +1981,7 @@ class Model:
 
                     return Topology.Edges(merged) or []
                 except Exception as e:
-                    return collected_edges
+                    return collected_intersected_wires
 
 
                    
@@ -1321,6 +2036,32 @@ class Model:
                         print(f"Example overlapping edge on faces {overlapping_edges[0][1]}")
                     
                     return edge_to_faces
+            
+            def are_all_directions_collinear(directions, tolerance=0.01):
+                """
+                Check if all direction vectors are collinear (parallel or anti-parallel).
+                """
+                from topologicpy.Vector import Vector
+
+                if len(directions) <= 1:
+                    return True
+
+                # Use first direction as reference
+                ref_dir = Vector.Normalize(directions[0])
+                if not ref_dir:
+                    return False
+
+                for direction in directions[1:]:
+                    norm_dir = Vector.Normalize(direction)
+                    if not norm_dir:
+                        continue
+
+                    # Check dot product - should be ±1 for collinear vectors
+                    dot = abs(Vector.Dot(ref_dir, norm_dir))
+                    if dot < (1.0 - tolerance):
+                        return False
+
+                return True
 
 
             topologic_faces = []
@@ -1330,10 +2071,15 @@ class Model:
             topologic_faces = []
             for boundary in all_boundaries:
                 topology = boundary.topologic
+                
+                # remove any co-linear edges
+                topology = Shell.RemoveCollinearEdges(topology)
+               
                 topologic_face = Face.ByShell(topology)
 
                 # transfer dict
                 topologic_face = transfer_topologic_dict(topology, topologic_face)
+
 
                 topologic_faces.append(topologic_face)
             
@@ -1375,11 +2121,85 @@ class Model:
             while attempts < max_attempts:
                 expanded_faces = [transfer_topologic_dict(f, Face.ByOffset(f, offset=-offset)) for f in simplified_faces]
                 
-                # edges = intersection_edges_from_faces(expanded_faces, tol=0.001, angle_prune_degree=1.0, skip_near_parallel=True, use_bbox_prune=False, merge=False)
+                wires = intersection_edges_from_faces(expanded_faces, tol=0.001, angle_prune_degree=1.0, skip_near_parallel=True, use_bbox_prune=False, merge=False)
+                print(f"Len Wires: {len(wires)}")
 
-                # if edges:
+                # Create cluster from wires to get unified topology
+                wire_cluster = Cluster.ByTopologies(wires)
+                
+                # Self-merge to connect shared vertices
+                merged_topology = Topology.SelfMerge(wire_cluster, transferDictionaries=True, tolerance=0.1)
+                wires = Topology.Wires(merged_topology)
+                print(f"Len Wires: {len(wires)}")
+
+                # Extract vertices and edges
+                vertices = Topology.Vertices(merged_topology)
+                edges = Topology.Edges(merged_topology)
+                print(len(edges))
+                merged_edges = Cluster.ByTopologies(edges)
+                merged_edges = Topology.SelfMerge(merged_edges, transferDictionaries=True, tolerance=0.1)
+                edges = Topology.Edges(merged_edges)
+                print(len(edges))
+
+                # Create graph
+                graph = Topologic_Graph.ByVerticesEdges(vertices, edges)
+                graph_degree_scores = Topologic_Graph.DegreeCentrality(graph, key='degree')
+                vertices = Topologic_Graph.Vertices(graph)
+                vertices_degree = []
+                v_i = 0
+                for vertex in vertices:
+                    d = Topology.Dictionary(vertex)
+                    d = Dictionary.SetValueAtKey(d, "degree", graph_degree_scores[v_i])
+                    d = Dictionary.SetValueAtKey(d, "degree_str", str(graph_degree_scores[v_i]))
+                    vertex = Topology.SetDictionary(vertex, d)
+                    vertices_degree.append(vertex)
+                    v_i += 1
+
+                
+                # Find vertices with degree 1 (dangling)
+                vertices_to_remove = []
+                for vertex in vertices:
+                    edges = Topologic_Graph.Edges(graph, vertices=[vertex])
+                    edge_directions = []
+
+                    for edge in edges:
+                        direction = Edge.Direction(edge)
+                        edge_directions.append(direction)
+
+                    # Check if all directions are parallel/anti-parallel
+                    if are_all_directions_collinear(edge_directions):
+                        vertices_to_remove.append(vertex)
+                    
+                
+                # Remove dangling vertices iteratively
+                while vertices_to_remove:
+                    v_count = 0
+                    for vertex in vertices_to_remove:
+                        graph = Topologic_Graph.RemoveVertex(graph, vertex)
+                    vertices_to_remove = []
+                    # # Check for new dangling vertices after removal
+                    # vertices = Topologic_Graph.Vertices(graph)
+                    # vertices_to_remove = []
+                    # for vertex in vertices:
+                    #     degree = Topologic_Graph.VertexDegree(graph, vertex, tolerance=tolerance)
+                    #     if degree == 1:
+                    #         vertices_to_remove.append(vertex)
+                
+                # Convert cleaned graph back to wires
+                cleaned_edges = Topologic_Graph.Edges(graph)
+                cleaned_wires = []
+                
+                # Group connected edges into wires
+                edge_groups = group_connected_edges(cleaned_edges, tolerance)
+                for edge_group in edge_groups:
+                    wire = Wire.ByEdges(edge_group, orient=True, tolerance=tolerance)
+                    if wire:
+                        cleaned_wires.append(wire)
+                
+                return cleaned_wires
+                
                 #     print("Found edges:", edges)
-                # wires = []
+                # edges = []
                 # for e in edges:
                 #     verts = Topology.Vertices(e)
                 #     wire = Wire.ByVertices(verts)
@@ -2178,7 +2998,11 @@ class Model:
 
         # Now lets heal the boundaries by finding intersections and extending them
         # self.heal_boundaries(dimentions=dimentions)
-        healed_faces = self.heal_boundaries(tolerance=25.0, version='topologic')
+        healed_boundary_dict, healed_boundaries = self.heal_boundaries(tolerance=25.0,
+                                             version='occ'
+                                             )
+
+        self.boundaries = healed_boundary_dict
 
         # Add boundary info to the boundary graph and the building graph
         for i, boundary in enumerate(self.boundaries.values()):
@@ -2213,29 +3037,29 @@ class Model:
         # test_healing_validation(self.boundaries, occ_faces)
 
         # Now lets create the adjacency relationships between boundaries
-        for boundary_id, boundary in self.boundaries.items():
-            # Find adjacent boundaries based on their geometry
-            for other_boundary_id, other_boundary in self.boundaries.items():
-                if boundary_id == other_boundary_id:
-                    continue
-                # Check if the boundaries intersect this needs to be a mesh intersect
-                # Skip if either boundary has no geometry
-                if boundary.geometry is None or other_boundary.geometry is None:
-                    continue
-                if boundary.geometry.mesh_intersects(other_boundary.geometry):
-                    # Create adjacency relationship
-                    rel = AdjacentTo(boundary_id, other_boundary_id)
-                    boundary.relationships.append(rel)
+        # for boundary_id, boundary in self.boundaries.items():
+        #     # Find adjacent boundaries based on their geometry
+        #     for other_boundary_id, other_boundary in self.boundaries.items():
+        #         if boundary_id == other_boundary_id:
+        #             continue
+        #         # Check if the boundaries intersect this needs to be a mesh intersect
+        #         # Skip if either boundary has no geometry
+        #         if boundary.geometry is None or other_boundary.geometry is None:
+        #             continue
+        #         if boundary.geometry.mesh_intersects(other_boundary.geometry):
+        #             # Create adjacency relationship
+        #             rel = AdjacentTo(boundary_id, other_boundary_id)
+        #             boundary.relationships.append(rel)
 
-                    self.relationships[boundary_id].append(rel)
-                    self.boundary_graph.add_edge(boundary_id, other_boundary_id, relationship=rel.type)
+        #             self.relationships[boundary_id].append(rel)
+        #             self.boundary_graph.add_edge(boundary_id, other_boundary_id, relationship=rel.type)
 
-                    # Add the other boundary to the adjacent spaces list
-                    boundary.adjacent_spaces.append(other_boundary_id)
-                    other_boundary.adjacent_spaces.append(boundary_id)
+        #             # Add the other boundary to the adjacent spaces list
+        #             boundary.adjacent_spaces.append(other_boundary_id)
+        #             other_boundary.adjacent_spaces.append(boundary_id)
 
-                    # Add to the building graph
-                    self.building_graph.add_edge(boundary_id, other_boundary_id, 'BOUNDARY_ADJACENT_TO', from_label='Boundary', to_label='Boundary')
+        #             # Add to the building graph
+        #             self.building_graph.add_edge(boundary_id, other_boundary_id, 'BOUNDARY_ADJACENT_TO', from_label='Boundary', to_label='Boundary')
 
         print(f"Boundaries inferred: {len(self.boundaries)}")
 
@@ -2254,6 +3078,69 @@ class Model:
         from topologicpy.CellComplex import CellComplex
         from topologicpy.Cell import Cell
         from itertools import combinations
+
+        def build_cellcomplex_dropping_bad_faces(faces, tolerance=0.0001, silent=False):
+            """
+            Build a CellComplex by progressively adding faces, dropping any that fail to merge.
+            
+            Returns:
+            - cellcomplex: The resulting CellComplex (or None if failed)
+            - good_faces: List of faces that were successfully included
+            - bad_faces: List of faces that were dropped
+            """
+            from topologicpy.CellComplex import CellComplex
+            from topologicpy.Topology import Topology
+
+            if not faces:
+                return None, [], []
+
+            good_faces = []
+            bad_faces = []
+
+            # Start with the first valid face
+            cellcomplex = None
+            for i, face in enumerate(faces):
+                if Topology.IsInstance(face, "Face"):
+                    cellcomplex = face
+                    good_faces.append(face)
+                    start_index = i + 1
+                    break
+
+            if not cellcomplex:
+                if not silent:
+                    print("No valid starting face found")
+                return None, [], faces
+
+            # Try to merge each remaining face
+            for i in range(start_index, len(faces)):
+                face = faces[i]
+                if not Topology.IsInstance(face, "Face"):
+                    bad_faces.append(face)
+                    continue
+
+                try:
+                    # Attempt to merge the face
+                    new_cellcomplex = cellcomplex.Merge(face, False, tolerance)
+
+                    if new_cellcomplex and Topology.IsInstance(new_cellcomplex, "Topology"):
+                        cellcomplex = new_cellcomplex
+                        good_faces.append(face)
+                    else:
+                        bad_faces.append(face)
+                        if not silent:
+                            print(f"Dropped face #{i} - merge returned invalid topology")
+                except Exception as e:
+                    bad_faces.append(face)
+                    if not silent:
+                        print(f"Dropped face #{i} - merge failed with error")
+
+            # Check if we actually got a CellComplex
+            if Topology.Type(cellcomplex) != Topology.TypeID("CellComplex"):
+                if not silent:
+                    print(f"Warning: Result is {Topology.TypeAsString(cellcomplex)}, not a CellComplex")
+
+            return cellcomplex, good_faces, bad_faces
+
 
         space_counter = 0
         def process_face_combo(combo):
@@ -2314,7 +3201,10 @@ class Model:
 
         # find all combinations of 4+ faces that form a closed volume
         cc = CellComplex.ByFaces(topologic_faces, tolerance=0.01, silent=True)
+
+
         if cc is None:
+            cc, g_faces, b_faces = build_cellcomplex_dropping_bad_faces(topologic_faces)
             raise ValueError("No valid cell complex could be created.")
 
         cells = Topology.Cells(cc)
