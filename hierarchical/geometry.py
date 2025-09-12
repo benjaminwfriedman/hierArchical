@@ -1302,6 +1302,152 @@ class Geometry:
       # Return true if distance is within tolerance
       return distance <= tolerance
     
+    def is_identical(self, geom_b, tolerance=0.01):
+      
+      from topologicpy.Topology import Topology
+      from topologicpy.Face import Face
+      from topologicpy.Vertex import Vertex
+      import math
+
+      topology_a = self.topologic
+      topology_b = geom_b.topologic
+
+      return Topology.IsSame(topology_a, topology_b)
+
+    def is_nearly_identical(self, geom_b, distance_tolerance=0.1, size_tolerance=0.1, angular_tolerance=5.0):
+      """
+      Check if two geometries are nearly identical within given tolerances.
+      
+      Parameters:
+      -----------
+      geom_b : Geometry
+          The second geometry to compare
+      distance_tolerance : float
+          Maximum allowed distance between centroids (default 0.1)
+      size_tolerance : float
+          Maximum allowed relative size difference (0-1, default 0.1 = 10%)
+      angular_tolerance : float
+          Maximum allowed angular difference in degrees for face normals (default 5.0)
+      """
+      from topologicpy.Face import Face
+      from topologicpy.Cell import Cell
+      from topologicpy.Topology import Topology
+      from topologicpy.Vertex import Vertex
+      import math
+
+      topology_a = self.topologic
+      topology_b = geom_b.topologic
+
+      # Check if topologies are same type
+      if Topology.Type(topology_a) != Topology.Type(topology_b):
+          return False
+
+      # Get the centroid coords
+      centroid_a = Topology.Centroid(topology_a)
+      centroid_b = Topology.Centroid(topology_b)
+
+      a_x, a_y, a_z = Vertex.X(centroid_a), Vertex.Y(centroid_a), Vertex.Z(centroid_a)
+      b_x, b_y, b_z = Vertex.X(centroid_b), Vertex.Y(centroid_b), Vertex.Z(centroid_b)
+
+      # Calculate distance between centroids
+      distance = math.sqrt((b_x - a_x)**2 + (b_y - a_y)**2 + (b_z - a_z)**2)
+
+      # Initialize size_difference and normal_difference
+      size_difference = float('inf')
+      normal_difference = 0
+
+      # Handle Faces
+      if Topology.IsInstance(topology_a, "Face") and Topology.IsInstance(topology_b, "Face"):
+          # Get areas
+          a_area = Face.Area(topology_a)
+          b_area = Face.Area(topology_b)
+
+          # Calculate relative size difference
+          if a_area > 0 and b_area > 0:
+              # Use relative difference: |a - b| / max(a, b)
+              size_difference = abs(a_area - b_area) / max(a_area, b_area)
+          elif a_area == 0 and b_area == 0:
+              size_difference = 0
+          else:
+              size_difference = float('inf')
+
+          # Get normals
+          a_normal = Face.Normal(topology_a)
+          b_normal = Face.Normal(topology_b)
+
+          # Calculate angular difference (handling flipped faces)
+          # Normalize vectors
+          def normalize(v):
+              mag = math.sqrt(sum(x**2 for x in v))
+              return [x/mag for x in v] if mag > 0 else v
+
+          a_normal = normalize(a_normal)
+          b_normal = normalize(b_normal)
+
+          # Calculate dot product
+          dot_product = sum(a * b for a, b in zip(a_normal, b_normal))
+
+          # Handle both same and opposite normals (flipped faces)
+          # Use absolute value of dot product to treat opposite normals as aligned
+          abs_dot = abs(dot_product)
+
+          # Clamp to [-1, 1] to handle floating point errors
+          abs_dot = max(-1, min(1, abs_dot))
+
+          # Convert to angle in degrees
+          normal_difference = math.degrees(math.acos(abs_dot))
+
+      # Handle Cells
+      elif Topology.IsInstance(topology_a, "Cell") and Topology.IsInstance(topology_b, "Cell"):
+          # Get volumes
+          a_volume = Cell.Volume(topology_a)
+          b_volume = Cell.Volume(topology_b)
+
+          # Calculate relative size difference
+          if a_volume > 0 and b_volume > 0:
+              size_difference = abs(a_volume - b_volume) / max(a_volume, b_volume)
+          elif a_volume == 0 and b_volume == 0:
+              size_difference = 0
+          else:
+              size_difference = float('inf')
+
+      # Handle Edges
+      elif Topology.IsInstance(topology_a, "Edge") and Topology.IsInstance(topology_b, "Edge"):
+          from topologicpy.Edge import Edge
+          a_length = Edge.Length(topology_a)
+          b_length = Edge.Length(topology_b)
+
+          if a_length > 0 and b_length > 0:
+              size_difference = abs(a_length - b_length) / max(a_length, b_length)
+          elif a_length == 0 and b_length == 0:
+              size_difference = 0
+          else:
+              size_difference = float('inf')
+
+      # Handle Wires
+      elif Topology.IsInstance(topology_a, "Wire") and Topology.IsInstance(topology_b, "Wire"):
+          from topologicpy.Wire import Wire
+          a_length = Wire.Length(topology_a)
+          b_length = Wire.Length(topology_b)
+
+          if a_length > 0 and b_length > 0:
+              size_difference = abs(a_length - b_length) / max(a_length, b_length)
+          elif a_length == 0 and b_length == 0:
+              size_difference = 0
+          else:
+              size_difference = float('inf')
+
+      # Perform tests
+      tests = []
+      tests.append(distance <= distance_tolerance)
+      tests.append(size_difference <= size_tolerance)
+
+      # Only check normal difference for faces
+      if Topology.IsInstance(topology_a, "Face") and Topology.IsInstance(topology_b, "Face"):
+          tests.append(normal_difference <= angular_tolerance)
+
+      # Return True only if all tests pass
+      return all(tests)
             
 
     def _to_trimesh(self) -> Optional['trimesh.Trimesh']:

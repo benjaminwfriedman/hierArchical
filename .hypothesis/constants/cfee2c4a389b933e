@@ -1,0 +1,4 @@
+# file: /Users/benjaminfriedman/repos/hierArchical/hierarchical/relationships.py
+# hypothesis_version: 6.136.3
+
+['adjacent_to', 'connects_to', 'contains', 'creates', 'embedded_in', 'embeds', 'has_component', 'has_passing_through', 'is_component_of', 'is_part_of', 'passes_through', 'supported_by', 'supports']

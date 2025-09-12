@@ -1,0 +1,4 @@
+# file: /Users/benjaminfriedman/repos/hierArchical/hierarchical/helpers.py
+# hypothesis_version: 6.136.3
+
+[1e-12, 1e-06, 250, '.', 'After Healing', 'Before Healing', 'average', 'boundary', 'face_count', 'gap_analysis', 'has_volume', 'is_closed', 'is_valid', 'is_watertight', 'lines+markers', 'max', 'scatter3d', 'shared', 'total', 'type', 'values', 'within_tolerance', 'x']

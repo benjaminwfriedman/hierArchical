@@ -1,0 +1,4 @@
+# file: /Users/benjaminfriedman/repos/hierArchical/hierarchical/items.py
+# hypothesis_version: 6.136.3
+
+[0.0, 0.01, 0.1, 1.0, 1000, ' (copy)', ', ', 'BaseItem', 'Component', 'Deck', 'Door', 'Geometry', 'HasPropertySets', 'IfcDoor', 'IfcDoorStyle', 'IfcRelDefinesByType', 'IsDecomposedBy', 'MaterialLayers', 'Name', 'Object', 'RelatedObjects', 'RelatingType', 'StyledByItem', 'Sub Part', 'SurfaceColour', 'Wall', 'Window', '__main__', 'adjacent_to', 'area', 'bottom', 'component', 'deck', 'diameter', 'door', 'edge_type', 'end_point', 'faces', 'floor_area', 'flow_rate', 'height', 'height_direction', 'km', 'left', 'length', 'length_direction', 'linear_density', 'material', 'mm', 'normal', 'object', 'overlap_percent', 'percent', 'perimeter', 'point', 'radius', 'relationships', 'right', 'start_point', 'surface_area', 'thickness', 'thickness_direction', 'top', 'unit_system', 'unknown', 'vertices', 'volume', 'wall', 'width', 'window', '²', '³']

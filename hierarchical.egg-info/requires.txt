@@ -1,0 +1,11 @@
+scipy
+numpy
+plotly
+networkx
+matplotlib
+trimesh
+topologicpy
+ipython
+nbformat
+kuzu
+openai
