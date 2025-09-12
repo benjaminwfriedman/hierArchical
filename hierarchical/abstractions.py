@@ -720,7 +720,7 @@ class Model:
         self.building_graph = BuildingGraph(db_path=f"./building_dbs/{self.id}_building_graph.db")  # Initialize the building graph
 
     @classmethod
-    def from_objects(cls, name, objects, existing_spaces=None):
+    def from_objects(cls, name, objects, existing_spaces=[]):
         """
         Create a model from a list of objects.
         """
@@ -1854,11 +1854,13 @@ class Model:
 
                 existing_space_overlaps.sort(key=lambda x: x['overlap'], reverse=True)
 
-                existing_space = existing_space_overlaps[0]
+                if len(existing_space_overlaps) > 0:
+                    existing_space = existing_space_overlaps[0]
+                
 
-                if existing_space['overlap'] > 0.3:
-                    print(f"Applying existing space attributes to inferred space: {existing_space['space'].name}")
-                    space.name = existing_space['space'].name
+                    if existing_space['overlap'] > 0.3:
+                        print(f"Applying existing space attributes to inferred space: {existing_space['space'].name}")
+                        space.name = existing_space['space'].name
                     
 
                 cell_dict = Topology.Dictionary(cell)

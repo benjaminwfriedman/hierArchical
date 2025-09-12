@@ -1,7 +1,8 @@
 from hierarchical.abstractions import Model
 
-model = Model.from_ifc(ifc_file="/Users/benjaminfriedman/repos/hierArchical/AC20-Institute-Var-2.ifc")
 # model = Model.from_ifc(ifc_file='sample_house.ifc')
+model = Model.from_ifc(ifc_file="AC20-Institute-Var-2.ifc")
+
 # Example usage
 # view the spaces + objects
 model.show_spaces(by="omniclass_space_type")
