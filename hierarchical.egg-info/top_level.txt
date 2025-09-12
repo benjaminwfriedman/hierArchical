@@ -1,3 +1,0 @@
-brep_faces
-building_dbs
-hierarchical
