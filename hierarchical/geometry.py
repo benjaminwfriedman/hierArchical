@@ -150,7 +150,9 @@ class Geometry:
 
     def _generate_topologic(self):
         """Generate TopologicPy topology from best available source"""
-        if self._opencascade_shape:
+        if self._topologic_topology:
+            return
+        elif self._opencascade_shape:
             self._topologic_topology = self._opencascade_to_topologic(self._opencascade_shape)
         elif self._mesh_data or self.mesh_data:
             mesh = self._mesh_data or self.mesh_data
@@ -175,37 +177,42 @@ class Geometry:
         except Exception as e:
             raise ValueError(f"Failed to convert TopologicPy to mesh: {e}")
 
-    def _topologic_to_opencascade(self, topology: Topology):
-        """Convert TopologicPy topology to OpenCascade shape"""
-        try:
-            # Use existing conversion if available in abstractions
-            from .abstractions import shape_from_topology_brep
-            return shape_from_topology_brep(topology)
-        except ImportError:
-            # Fallback conversion
-            from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_Sewing
-            from OCC.Core.gp import gp_Pnt
-            from topologicpy.Face import Face
-            from topologicpy.Vertex import Vertex
-            
-            sewing = BRepBuilderAPI_Sewing()
-            
-            for face in topology.Faces():
-                face_vertices = Face.Vertices(face)
-                if len(face_vertices) >= 3:
-                    # Create face from vertices (simplified)
-                    points = []
-                    for vertex in face_vertices:
-                        x, y, z = Vertex.Coordinates(vertex)
-                        points.append(gp_Pnt(x, y, z))
-                    
-                    # This is a simplified approach - real implementation would be more complex
-                    if len(points) >= 3:
-                        # For now, return None and let it fall back to mesh conversion
-                        pass
-            
-            # If we can't convert, return None to trigger fallback
-            return None
+    def _topologic_to_opencascade(self, topology):
+      """Convert TopologicPy topology to OpenCascade shape"""
+      try:
+          # Use existing conversion if available in abstractions
+          from .abstractions import shape_from_topology_brep
+          return shape_from_topology_brep(topology)
+      except ImportError:
+          # Fallback: Use BREP string as intermediate format
+          from OCC.Core.BRepTools import breptools
+          from OCC.Core.BRep import BRep_Builder
+          from OCC.Core.TopoDS import TopoDS_Shape
+          from OCC.Core.BRepTools import breptools_Read
+          from topologicpy.Topology import Topology
+
+          try:
+              # Get BREP string from topologic topology
+              brep_string = Topology.BREPString(topology)
+              
+              if not brep_string:
+                  return None
+
+              # Create a shape and builder
+              shape = TopoDS_Shape()
+              builder = BRep_Builder()
+
+              # Read the BREP string into the shape
+              success = breptools.Read(shape, brep_string, builder)
+
+              if success:
+                  return shape
+              else:
+                  return None
+
+          except Exception as e:
+              print(f"Error converting topology to OpenCascade shape: {e}")
+              return None
 
     def _opencascade_to_mesh(self, shape) -> Dict[str, Any]:
         """Convert OpenCascade shape to mesh representation"""
@@ -232,19 +239,55 @@ class Geometry:
                 triangulation = BRep_Tool.Triangulation(face, location)
                 
                 if triangulation:
-                    # Extract vertices and faces from triangulation
-                    # This is a simplified version - full implementation would handle
-                    # vertex indexing and location transformation properly
-                    pass
+                    # Get transformation if location exists
+                    if not location.IsIdentity():
+                        trsf = location.Transformation()
+                    else:
+                        trsf = None
+
+                    # Map local to global vertex indices for this face
+                    face_vertex_map = {}
+                    
+                    # Extract vertices
+                    for i in range(1, triangulation.NbNodes() + 1):
+                        node = triangulation.Node(i)
+                        
+                        # Apply transformation if needed
+                        if trsf:
+                            node.Transform(trsf)
+                        
+                        vertex_key = (round(node.X(), 6), round(node.Y(), 6), round(node.Z(), 6))
+                        
+                        if vertex_key not in vertex_map:
+                            global_idx = len(vertices)  # Use length as index
+                            vertices.append([node.X(), node.Y(), node.Z()])
+                            vertex_map[vertex_key] = global_idx
+                            face_vertex_map[i] = global_idx
+                        else:
+                            face_vertex_map[i] = vertex_map[vertex_key]
+                    
+                    # Extract triangles
+                    for i in range(1, triangulation.NbTriangles() + 1):
+                        triangle = triangulation.Triangle(i)
+                        n1, n2, n3 = triangle.Get()
+                        
+                        # Convert to global vertex indices
+                        if n1 in face_vertex_map and n2 in face_vertex_map and n3 in face_vertex_map:
+                            faces.append([face_vertex_map[n1], face_vertex_map[n2], face_vertex_map[n3]])
                 
                 explorer.Next()
             
-            # Fallback to empty mesh if extraction fails
-            return {"vertices": [], "faces": []}
+            return {"vertices": vertices, "faces": faces}
             
         except Exception as e:
-            # If OpenCascade conversion fails, return empty mesh
-            return {"vertices": [], "faces": []}
+            print(f"Encountered Error: {e}")
+            return {
+                "vertices": [],
+                "faces": []
+            }
+            
+            
+       
 
     def _mesh_to_opencascade(self, mesh: Dict[str, Any]):
         """Convert mesh to OpenCascade shape (limited precision)"""
@@ -335,16 +378,43 @@ class Geometry:
 
     def _opencascade_to_topologic(self, shape) -> Optional[Topology]:
         """Convert OpenCascade shape to TopologicPy topology"""
+        from topologicpy.Topology import Topology
+        from OCC.Core.BRepTools import breptools
+        from OCC.Core.Message import Message_ProgressRange
+        from OCC.Core.BRep import BRep_Builder
+        from OCC.Core.TopoDS import TopoDS_Shape
+        from topologicpy.Topology import Topology
+        import tempfile
+        import os
+        from uuid import uuid4
+
+
+        temp_file = None
         try:
-            # Use existing conversion if available in abstractions
-            from .abstractions import topology_from_shape_brep
-            return topology_from_shape_brep(shape)
-        except ImportError:
-            # If no existing conversion, return None for now
-            return None
+        
+            # generate temp file
+            temp_path = f'temp_{uuid4()}.brep'
+            # write occ to brep file - progress range is optional
+            breptools.Write(shape, temp_path)
+
+            topology = Topology.ByBREPPath(temp_path)
+
+            # Clean up the temp file
+            os.remove(temp_path)
+
+            # Return the topology
+            return topology
+        
         except Exception as e:
-            print(f"Warning: Failed to convert OpenCascade to TopologicPy: {e}")
-            return None
+            print(f"Experianced Error: {e}")
+                        
+        finally:
+            # Clean up temporary file
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.unlink(temp_file)
+                except:
+                    pass  # Ignore cleanup errors
 
     @classmethod
     def from_obj(cls, obj_path: Union[str, Path]) -> "Geometry":
@@ -471,6 +541,32 @@ class Geometry:
 
         geom._mesh_data = {"vertices": vertices, "faces": faces}
         geom._mesh_generated = True
+
+        occ_shape = geom._topologic_to_opencascade(topology)
+
+        geom._opencascade_shape = occ_shape
+        geom._occ_generated = True
+
+        return geom
+    
+    @classmethod
+    def from_occ(cls, shape):
+
+        geom = cls()
+        
+        mesh_data = geom._opencascade_to_mesh(shape)
+
+        #TODO: Implement e_opencascade_to_topologic
+        topology = geom._opencascade_to_topologic(shape)
+
+        geom._mesh_data = mesh_data
+        geom.mesh_data = mesh_data
+        geom._mesh_generated = True
+        geom._opencascade_shape = shape
+        geom._topologic_topology = topology
+        geom._topologic_generated = True
+
+
         return geom
 
     from specklepy.objects.geometry import Mesh
@@ -1113,6 +1209,246 @@ class Geometry:
                         return True
             except Exception:
                 return self.bbox_intersects(other, return_overlap_percent)
+            
+    def average_vertex_distance(self, geom_b):
+        from topologicpy.Topology import Topology
+        from topologicpy.Vertex import Vertex
+        topology_a = self.topologic
+        topology_b = geom_b.topologic
+
+        verts_a = Topology.Vertices(topology_a)
+        verts_b = Topology.Vertices(topology_b)
+
+        vertex_distances = []
+        for v_a in verts_a:
+            for v_b in verts_b:
+                vertex_distances.append(Vertex.Distance(v_a, v_b))
+
+        return sum(vertex_distances) / len(vertex_distances)
+
+    def is_coplanar(self, geom_b, tolerance=0.5, mantissa=6, angle_tolerance=5.0):
+      """
+      Check if two geometries are coplanar with better tolerance handling.
+      
+      Parameters:
+      -----------
+      geom_b : Geometry
+          The second geometry to compare
+      tolerance : float
+          Distance tolerance for coplanarity (default 0.5)
+      mantissa : int
+          Decimal precision (default 6)
+      angle_tolerance : float
+          Maximum angle difference in degrees for normals (default 5.0)
+      """
+      from topologicpy.Topology import Topology
+      from topologicpy.Face import Face
+      from topologicpy.Vertex import Vertex
+      import math
+
+      topology_a = self.topologic
+      topology_b = geom_b.topologic
+
+      if not (Topology.IsInstance(topology_a, "Face") and Topology.IsInstance(topology_b, "Face")):
+          raise ValueError("Can only run is_coplanar on geometry that can be represented as Topologic Faces")
+
+      # Get normals
+      normal_a = Face.Normal(topology_a, mantissa=mantissa)
+      normal_b = Face.Normal(topology_b, mantissa=mantissa)
+
+      # Normalize the normals (they should already be, but let's ensure)
+      def normalize(v):
+          mag = math.sqrt(sum(x**2 for x in v))
+          return [x/mag for x in v] if mag > 0 else v
+
+      normal_a = normalize(normal_a)
+      normal_b = normalize(normal_b)
+
+      # Check if normals are parallel (either same or opposite direction)
+      dot_product = sum(a * b for a, b in zip(normal_a, normal_b))
+
+      # Normals are parallel if dot product is close to 1 or -1
+      if abs(abs(dot_product) - 1.0) > math.radians(angle_tolerance):
+          return False  # Normals not parallel enough
+
+      # Now check if the faces are on the same plane by testing point-to-plane distance
+      # Get center points from both faces
+      center_a = Face.VertexByParameters(topology_a, 0.5, 0.5)
+      coords_a = [Vertex.X(center_a), Vertex.Y(center_a), Vertex.Z(center_a)]
+
+      # Get plane equation for face B
+      plane_b = Face.PlaneEquation(topology_b, mantissa=mantissa)
+
+      # Calculate signed distance from point A to plane B
+      # Distance = |ax + by + cz + d| / sqrt(a² + b² + c²)
+      numerator = abs(
+          plane_b['a'] * coords_a[0] +
+          plane_b['b'] * coords_a[1] +
+          plane_b['c'] * coords_a[2] +
+          plane_b['d']
+      )
+
+      denominator = math.sqrt(
+          plane_b['a']**2 +
+          plane_b['b']**2 +
+          plane_b['c']**2
+      )
+
+      if denominator < 1e-10:  # Degenerate plane
+          return False
+
+      distance = numerator / denominator
+
+      # Return true if distance is within tolerance
+      return distance <= tolerance
+    
+    def is_identical(self, geom_b, tolerance=0.01):
+      
+      from topologicpy.Topology import Topology
+      from topologicpy.Face import Face
+      from topologicpy.Vertex import Vertex
+      import math
+
+      topology_a = self.topologic
+      topology_b = geom_b.topologic
+
+      return Topology.IsSame(topology_a, topology_b)
+
+    def is_nearly_identical(self, geom_b, distance_tolerance=0.1, size_tolerance=0.1, angular_tolerance=5.0):
+      """
+      Check if two geometries are nearly identical within given tolerances.
+      
+      Parameters:
+      -----------
+      geom_b : Geometry
+          The second geometry to compare
+      distance_tolerance : float
+          Maximum allowed distance between centroids (default 0.1)
+      size_tolerance : float
+          Maximum allowed relative size difference (0-1, default 0.1 = 10%)
+      angular_tolerance : float
+          Maximum allowed angular difference in degrees for face normals (default 5.0)
+      """
+      from topologicpy.Face import Face
+      from topologicpy.Cell import Cell
+      from topologicpy.Topology import Topology
+      from topologicpy.Vertex import Vertex
+      import math
+
+      topology_a = self.topologic
+      topology_b = geom_b.topologic
+
+      # Check if topologies are same type
+      if Topology.Type(topology_a) != Topology.Type(topology_b):
+          return False
+
+      # Get the centroid coords
+      centroid_a = Topology.Centroid(topology_a)
+      centroid_b = Topology.Centroid(topology_b)
+
+      a_x, a_y, a_z = Vertex.X(centroid_a), Vertex.Y(centroid_a), Vertex.Z(centroid_a)
+      b_x, b_y, b_z = Vertex.X(centroid_b), Vertex.Y(centroid_b), Vertex.Z(centroid_b)
+
+      # Calculate distance between centroids
+      distance = math.sqrt((b_x - a_x)**2 + (b_y - a_y)**2 + (b_z - a_z)**2)
+
+      # Initialize size_difference and normal_difference
+      size_difference = float('inf')
+      normal_difference = 0
+
+      # Handle Faces
+      if Topology.IsInstance(topology_a, "Face") and Topology.IsInstance(topology_b, "Face"):
+          # Get areas
+          a_area = Face.Area(topology_a)
+          b_area = Face.Area(topology_b)
+
+          # Calculate relative size difference
+          if a_area > 0 and b_area > 0:
+              # Use relative difference: |a - b| / max(a, b)
+              size_difference = abs(a_area - b_area) / max(a_area, b_area)
+          elif a_area == 0 and b_area == 0:
+              size_difference = 0
+          else:
+              size_difference = float('inf')
+
+          # Get normals
+          a_normal = Face.Normal(topology_a)
+          b_normal = Face.Normal(topology_b)
+
+          # Calculate angular difference (handling flipped faces)
+          # Normalize vectors
+          def normalize(v):
+              mag = math.sqrt(sum(x**2 for x in v))
+              return [x/mag for x in v] if mag > 0 else v
+
+          a_normal = normalize(a_normal)
+          b_normal = normalize(b_normal)
+
+          # Calculate dot product
+          dot_product = sum(a * b for a, b in zip(a_normal, b_normal))
+
+          # Handle both same and opposite normals (flipped faces)
+          # Use absolute value of dot product to treat opposite normals as aligned
+          abs_dot = abs(dot_product)
+
+          # Clamp to [-1, 1] to handle floating point errors
+          abs_dot = max(-1, min(1, abs_dot))
+
+          # Convert to angle in degrees
+          normal_difference = math.degrees(math.acos(abs_dot))
+
+      # Handle Cells
+      elif Topology.IsInstance(topology_a, "Cell") and Topology.IsInstance(topology_b, "Cell"):
+          # Get volumes
+          a_volume = Cell.Volume(topology_a)
+          b_volume = Cell.Volume(topology_b)
+
+          # Calculate relative size difference
+          if a_volume > 0 and b_volume > 0:
+              size_difference = abs(a_volume - b_volume) / max(a_volume, b_volume)
+          elif a_volume == 0 and b_volume == 0:
+              size_difference = 0
+          else:
+              size_difference = float('inf')
+
+      # Handle Edges
+      elif Topology.IsInstance(topology_a, "Edge") and Topology.IsInstance(topology_b, "Edge"):
+          from topologicpy.Edge import Edge
+          a_length = Edge.Length(topology_a)
+          b_length = Edge.Length(topology_b)
+
+          if a_length > 0 and b_length > 0:
+              size_difference = abs(a_length - b_length) / max(a_length, b_length)
+          elif a_length == 0 and b_length == 0:
+              size_difference = 0
+          else:
+              size_difference = float('inf')
+
+      # Handle Wires
+      elif Topology.IsInstance(topology_a, "Wire") and Topology.IsInstance(topology_b, "Wire"):
+          from topologicpy.Wire import Wire
+          a_length = Wire.Length(topology_a)
+          b_length = Wire.Length(topology_b)
+
+          if a_length > 0 and b_length > 0:
+              size_difference = abs(a_length - b_length) / max(a_length, b_length)
+          elif a_length == 0 and b_length == 0:
+              size_difference = 0
+          else:
+              size_difference = float('inf')
+
+      # Perform tests
+      tests = []
+      tests.append(distance <= distance_tolerance)
+      tests.append(size_difference <= size_tolerance)
+
+      # Only check normal difference for faces
+      if Topology.IsInstance(topology_a, "Face") and Topology.IsInstance(topology_b, "Face"):
+          tests.append(normal_difference <= angular_tolerance)
+
+      # Return True only if all tests pass
+      return all(tests)
+            
 
     def _to_trimesh(self) -> Optional['trimesh.Trimesh']:
         """Convert this geometry to a trimesh object."""
@@ -1206,3 +1542,428 @@ def process_face_combo(combo):
 
     except Exception as e:
         return (combo, float("inf"), None)  # error path
+    
+
+from dataclasses import dataclass
+from typing import List, Dict, Optional, Tuple
+from enum import Enum
+
+class IssueType(Enum):
+    INVALID_ORIENTATION = "invalid_orientation"
+    SELF_INTERSECTION = "self_intersection"
+    DEGENERATE = "degenerate"
+    INVALID_WIRES = "invalid_wires"
+    HIGH_TOLERANCE = "high_tolerance"
+    POOR_CONTINUITY = "poor_continuity"
+    GAPS = "gaps"
+    UNKNOWN_ERROR = "unknown_error"
+
+class IssueSeverity(Enum):
+    CRITICAL = "critical"
+    WARNING = "warning"
+    INFO = "info"
+
+@dataclass
+class FaceIssue:
+    issue_type: IssueType
+    severity: IssueSeverity
+    description: str
+    suggested_fix: str
+    details: Dict = None
+
+@dataclass
+class FaceValidationResult:
+    face_id: int
+    is_valid: bool
+    issues: List[FaceIssue]
+    properties: Dict
+    
+class FaceValidator:
+    """Comprehensive face validation and analysis manager"""
+    
+    def __init__(self, config=None):
+        """
+        Initialize validator with configuration options
+        
+        Args:
+            config: Dictionary with validation thresholds
+        """
+        self.config = config or self._default_config()
+        self.results = {}
+        
+    def _default_config(self):
+        """Default validation configuration"""
+        return {
+            'min_area_threshold': 1e-6,
+            'max_tolerance': 1e-3,
+            'min_continuity': 0,  # GeomAbs_C0
+            'gap_tolerance': 1e-6,
+            'enable_detailed_analysis': True,
+            'auto_fix_attempts': True
+        }
+    
+    def validate_face(self, face, face_id=None) -> FaceValidationResult:
+        """
+        Run comprehensive validation on a single face
+        
+        Args:
+            face: TopoDS_Face to validate
+            face_id: Optional identifier for the face
+            
+        Returns:
+            FaceValidationResult with all issues found
+        """
+        if face_id is None:
+            face_id = id(face)
+            
+        issues = []
+        properties = {}
+        
+        # Run all validation checks
+        issues.extend(self._check_basic_validity(face, properties))
+        issues.extend(self._check_geometry_issues(face, properties))
+        issues.extend(self._check_topology_issues(face, properties))
+        issues.extend(self._check_tolerance_issues(face, properties))
+        issues.extend(self._check_surface_quality(face, properties))
+        
+        # Determine overall validity
+        critical_issues = [i for i in issues if i.severity == IssueSeverity.CRITICAL]
+        is_valid = len(critical_issues) == 0
+        
+        result = FaceValidationResult(
+            face_id=face_id,
+            is_valid=is_valid,
+            issues=issues,
+            properties=properties
+        )
+        
+        self.results[face_id] = result
+        return result
+    
+    def _check_basic_validity(self, face, properties) -> List[FaceIssue]:
+        """Check basic face validity"""
+        issues = []
+        
+        try:
+            from OCC.Core.BRepCheck import BRepCheck_Face
+            from OCC.Core.TopAbs import TopAbs_FORWARD, TopAbs_REVERSED
+            
+            checker = BRepCheck_Face(face)
+            properties['basic_validity'] = checker.IsValid()
+            
+            if not checker.IsValid():
+                issues.append(FaceIssue(
+                    issue_type=IssueType.INVALID_ORIENTATION,
+                    severity=IssueSeverity.CRITICAL,
+                    description="Face has invalid basic topology",
+                    suggested_fix="Use ShapeFix_Face to repair topology"
+                ))
+            
+            # Check orientation
+            orientation = face.Orientation()
+            properties['orientation'] = "forward" if orientation == TopAbs_FORWARD else "reversed"
+            
+        except Exception as e:
+            issues.append(FaceIssue(
+                issue_type=IssueType.UNKNOWN_ERROR,
+                severity=IssueSeverity.WARNING,
+                description=f"Error checking basic validity: {e}",
+                suggested_fix="Manual inspection required"
+            ))
+            
+        return issues
+    
+    def _check_geometry_issues(self, face, properties) -> List[FaceIssue]:
+        """Check for geometric issues like self-intersection and degeneracy"""
+        issues = []
+        
+        try:
+            from OCC.Core.BRepCheck import BRepCheck_Analyzer
+            from OCC.Core.GProp import GProp_GProps
+            from OCC.Core.BRepGProp import brepgprop_SurfaceProperties
+            
+            # Self-intersection check
+            analyzer = BRepCheck_Analyzer(face)
+            properties['has_geometric_issues'] = not analyzer.IsValid()
+            
+            if not analyzer.IsValid():
+                issues.append(FaceIssue(
+                    issue_type=IssueType.SELF_INTERSECTION,
+                    severity=IssueSeverity.CRITICAL,
+                    description="Face may have self-intersections or other geometric issues",
+                    suggested_fix="Use BRepAlgoAPI_Defeaturing or rebuild face"
+                ))
+            
+            # Degeneracy check
+            props = GProp_GProps()
+            brepgprop_SurfaceProperties(face, props)
+            area = props.Mass()
+            properties['area'] = area
+            
+            if area < self.config['min_area_threshold']:
+                issues.append(FaceIssue(
+                    issue_type=IssueType.DEGENERATE,
+                    severity=IssueSeverity.CRITICAL,
+                    description=f"Degenerate face with area {area} < {self.config['min_area_threshold']}",
+                    suggested_fix="Remove face or merge with adjacent faces"
+                ))
+            
+        except Exception as e:
+            issues.append(FaceIssue(
+                issue_type=IssueType.UNKNOWN_ERROR,
+                severity=IssueSeverity.WARNING,
+                description=f"Error checking geometry: {e}",
+                suggested_fix="Manual inspection required"
+            ))
+            
+        return issues
+    
+    def _check_topology_issues(self, face, properties) -> List[FaceIssue]:
+        """Check wire structure and topology"""
+        issues = []
+        
+        try:
+            from OCC.Core.TopExp import TopExp_Explorer
+            from OCC.Core.TopAbs import TopAbs_WIRE, TopAbs_EDGE
+            from OCC.Core.BRepCheck import BRepCheck_Wire
+            from OCC.Core.BRep import BRep_Tool
+            
+            wire_explorer = TopExp_Explorer(face, TopAbs_WIRE)
+            wire_count = 0
+            invalid_wires = 0
+            
+            while wire_explorer.More():
+                wire = wire_explorer.Current()
+                wire_count += 1
+                
+                # Check wire validity
+                wire_checker = BRepCheck_Wire(wire)
+                if not wire_checker.IsValid():
+                    invalid_wires += 1
+                
+                # Check if wire is closed
+                if not BRep_Tool.IsClosed(wire):
+                    invalid_wires += 1
+                
+                wire_explorer.Next()
+            
+            properties['wire_count'] = wire_count
+            properties['invalid_wires'] = invalid_wires
+            
+            if invalid_wires > 0:
+                issues.append(FaceIssue(
+                    issue_type=IssueType.INVALID_WIRES,
+                    severity=IssueSeverity.CRITICAL,
+                    description=f"{invalid_wires} invalid or open wires out of {wire_count}",
+                    suggested_fix="Use ShapeFix_Wire to repair wire topology"
+                ))
+                
+        except Exception as e:
+            issues.append(FaceIssue(
+                issue_type=IssueType.UNKNOWN_ERROR,
+                severity=IssueSeverity.WARNING,
+                description=f"Error checking topology: {e}",
+                suggested_fix="Manual inspection required"
+            ))
+            
+        return issues
+    
+    def _check_tolerance_issues(self, face, properties) -> List[FaceIssue]:
+        """Check tolerance values"""
+        issues = []
+        
+        try:
+            from OCC.Core.BRep import BRep_Tool
+            
+            tolerance = BRep_Tool.Tolerance(face)
+            properties['tolerance'] = tolerance
+            
+            if tolerance > self.config['max_tolerance']:
+                issues.append(FaceIssue(
+                    issue_type=IssueType.HIGH_TOLERANCE,
+                    severity=IssueSeverity.WARNING,
+                    description=f"High tolerance {tolerance} > {self.config['max_tolerance']}",
+                    suggested_fix="Consider rebuilding face with tighter tolerance"
+                ))
+                
+        except Exception as e:
+            issues.append(FaceIssue(
+                issue_type=IssueType.UNKNOWN_ERROR,
+                severity=IssueSeverity.WARNING,
+                description=f"Error checking tolerance: {e}",
+                suggested_fix="Manual inspection required"
+            ))
+            
+        return issues
+    
+    def _check_surface_quality(self, face, properties) -> List[FaceIssue]:
+        """Check surface continuity and quality"""
+        issues = []
+        
+        try:
+            from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
+            from OCC.Core.GeomAbs import GeomAbs_C0, GeomAbs_C1, GeomAbs_C2
+            
+            adaptor = BRepAdaptor_Surface(face)
+            
+            u_continuity = adaptor.UContinuity()
+            v_continuity = adaptor.VContinuity()
+            
+            properties['u_continuity'] = int(u_continuity)
+            properties['v_continuity'] = int(v_continuity)
+            
+            # Compare with configured minimum continuity
+            min_continuity = min(int(u_continuity), int(v_continuity))
+            min_required = self.config.get('min_continuity', 0)
+            
+            if min_continuity < min_required:
+                issues.append(FaceIssue(
+                    issue_type=IssueType.POOR_CONTINUITY,
+                    severity=IssueSeverity.INFO,
+                    description=f"Low surface continuity: {min_continuity} < {min_required}",
+                    suggested_fix="Consider surface smoothing if needed for your application"
+                ))
+                
+        except Exception as e:
+            issues.append(FaceIssue(
+                issue_type=IssueType.UNKNOWN_ERROR,
+                severity=IssueSeverity.WARNING,
+                description=f"Error checking surface quality: {e}",
+                suggested_fix="Manual inspection required"
+            ))
+            
+        return issues
+    
+    def validate_solid(self, solid) -> Dict[int, FaceValidationResult]:
+        """Validate all faces in a solid"""
+        from OCC.Core.TopExp import TopExp_Explorer
+        from OCC.Core.TopAbs import TopAbs_FACE
+        
+        results = {}
+        face_explorer = TopExp_Explorer(solid, TopAbs_FACE)
+        face_count = 0
+        
+        while face_explorer.More():
+            face = face_explorer.Current()
+            face_count += 1
+            
+            result = self.validate_face(face, face_count)
+            results[face_count] = result
+            
+            face_explorer.Next()
+        
+        return results
+    
+    def get_summary_report(self) -> str:
+        """Generate a summary report of all validations"""
+        if not self.results:
+            return "No faces validated yet."
+        
+        total_faces = len(self.results)
+        valid_faces = sum(1 for r in self.results.values() if r.is_valid)
+        invalid_faces = total_faces - valid_faces
+        
+        # Count issues by type
+        issue_counts = {}
+        for result in self.results.values():
+            for issue in result.issues:
+                issue_type = issue.issue_type.value
+                issue_counts[issue_type] = issue_counts.get(issue_type, 0) + 1
+        
+        report = f"""
+Face Validation Summary
+======================
+Total faces validated: {total_faces}
+Valid faces: {valid_faces}
+Invalid faces: {invalid_faces}
+Success rate: {(valid_faces/total_faces)*100:.1f}%
+
+Issue Breakdown:
+"""
+        for issue_type, count in sorted(issue_counts.items()):
+            report += f"  {issue_type.replace('_', ' ').title()}: {count}\n"
+        
+        return report
+    
+    def get_invalid_faces(self) -> List[Tuple[int, FaceValidationResult]]:
+        """Get list of faces that failed validation"""
+        return [(face_id, result) for face_id, result in self.results.items() 
+                if not result.is_valid]
+    
+    def get_faces_with_issue(self, issue_type: IssueType) -> List[Tuple[int, FaceValidationResult]]:
+        """Get faces that have a specific type of issue"""
+        matching_faces = []
+        for face_id, result in self.results.items():
+            if any(issue.issue_type == issue_type for issue in result.issues):
+                matching_faces.append((face_id, result))
+        return matching_faces
+    
+    def suggest_fixes(self, face_id: int) -> List[str]:
+        """Get suggested fixes for a specific face"""
+        if face_id not in self.results:
+            return ["Face not validated yet"]
+        
+        result = self.results[face_id]
+        return [issue.suggested_fix for issue in result.issues]
+
+# Usage example
+def example_usage():
+    """Example of how to use the FaceValidator"""
+    
+    # Create validator with custom config
+    config = {
+        'min_area_threshold': 1e-5,
+        'max_tolerance': 5e-4,
+        'enable_detailed_analysis': True
+    }
+    validator = FaceValidator(config)
+    
+    # Validate a single face
+    # result = validator.validate_face(some_face)
+    # print(f"Face valid: {result.is_valid}")
+    # print(f"Issues found: {len(result.issues)}")
+    
+    # Validate all faces in a solid
+    # results = validator.validate_solid(some_solid)
+    
+    # Get summary report
+    # print(validator.get_summary_report())
+    
+    # Get faces with specific issues
+    # degenerate_faces = validator.get_faces_with_issue(IssueType.DEGENERATE)
+    
+    # Get suggested fixes
+    # fixes = validator.suggest_fixes(face_id=1)
+    
+    pass
+
+# Usage example
+def example_usage():
+    """Example of how to use the FaceValidator"""
+    
+    # Create validator with custom config
+    config = {
+        'min_area_threshold': 1e-5,
+        'max_tolerance': 5e-4,
+        'enable_detailed_analysis': True
+    }
+    validator = FaceValidator(config)
+    
+    # Validate a single face
+    # result = validator.validate_face(some_face)
+    # print(f"Face valid: {result.is_valid}")
+    # print(f"Issues found: {len(result.issues)}")
+    
+    # Validate all faces in a solid
+    # results = validator.validate_solid(some_solid)
+    
+    # Get summary report
+    # print(validator.get_summary_report())
+    
+    # Get faces with specific issues
+    # degenerate_faces = validator.get_faces_with_issue(IssueType.DEGENERATE)
+    
+    # Get suggested fixes
+    # fixes = validator.suggest_fixes(face_id=1)
+    
+    pass

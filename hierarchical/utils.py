@@ -119,7 +119,8 @@ def plot_items(items,
         if color_by_item:
             # Use item name or class name for legend
             item_name = getattr(group[0], 'name', None) or type(group[0]).__name__
-            legend_name = f"{item_name} ({id(group[0])})"
+            item_id = getattr(group[0], 'id', None) or type(group[0]).__name__
+            legend_name = f"{item_name} ({item_id})"
         else:
             legend_name = str(key)
 
@@ -285,14 +286,16 @@ def plot_shapely_geometries(geometries, color='black'):
     plt.show()
 
 
-def plot_topologic_objects(objects: List, showVertices=True):
+def plot_topologic_objects(objects: List, showVertices=True, faceLabelKey=None, vertexLabelKey=None):
     from topologicpy.Topology import Topology
 
     Topology.Show(
         objects,
         renderer="browser",
         showVertices=showVertices,
-        vertexSize=5
+        vertexSize=5,
+        faceLabelKey=faceLabelKey, 
+        vertexLabelKey=vertexLabelKey
     )
 
 

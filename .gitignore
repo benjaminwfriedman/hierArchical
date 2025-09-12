@@ -1,0 +1,34 @@
+# Environment and sensitive files
+.env
+.DS_Store
+.coverage
+.vscode/
+__pycache__/
+*.pyc
+
+# Build and package files
+*.egg-info/
+build/
+dist/
+
+# Database files
+*.db
+*.db.lock
+*.db.wal
+building_dbs/
+
+# Temporary files
+temp_*.brep
+temp_*.step
+test_output_*
+
+# Archives and binary files
+*.zip
+*.brep
+*.step
+
+# Hypothesis testing cache
+.hypothesis/
+
+# Other generated files
+*.json.gz
