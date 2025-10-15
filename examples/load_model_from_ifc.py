@@ -1,7 +1,7 @@
 from hierarchical.abstractions import Model
 
 # model = Model.from_ifc(ifc_file='sample_house.ifc')
-model = Model.from_ifc(ifc_file="AC20-Institute-Var-2.ifc")
+model = Model.from_ifc(ifc_file="AC20-Institute-Var-2_rename.ifc")
 
 # Example usage
 # view the spaces + objects

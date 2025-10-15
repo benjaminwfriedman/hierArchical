@@ -4467,6 +4467,7 @@ class Model:
 
         # Step 4: Execute query on graph
         try:
+            cypher_query = cypher_query + "LIMIT 30"
             result = self.building_graph.query_to_string(cypher_query)
         except Exception as e:
             return f"Error running query: {e}\nQuery:\n{cypher_query}"
